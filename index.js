@@ -4,7 +4,7 @@ import fs from "fs";
 import * as cheerio from "cheerio";
 import plist from "@plist/plist";
 
-const { parsePlist } = plist;
+const parsePlist = plist.parse;
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -57,7 +57,6 @@ function extractMainHtmlFromWebarchive(filePath) {
   }
 
   const data = main.WebResourceData;
-  const mime = main.WebResourceMIMEType || "";
   const encoding =
     typeof main.WebResourceTextEncodingName === "string"
       ? main.WebResourceTextEncodingName.toLowerCase()
@@ -72,10 +71,6 @@ function extractMainHtmlFromWebarchive(filePath) {
     htmlBuffer = Buffer.from(data);
   } else {
     throw new Error("WebResourceData の形式が想定外");
-  }
-
-  if (mime && !String(mime).includes("html")) {
-    console.warn(`Main resource MIME type: ${mime}`);
   }
 
   try {
@@ -187,19 +182,15 @@ async function answerWithArchive(question) {
       {
         role: "system",
         content:
-          "あなたはスマスロ・パチスロの情報整理が得意なアシスタントです。回答は必ず与えられた資料の内容を優先して、日本語で分かりやすく答えてください。資料に根拠が薄い場合は断定しすぎず、『資料上では』『この資料の範囲では』と前置きしてください。",
+          "あなたはスマスロ・パチスロの情報整理が得意なアシスタントです。資料ベースで回答してください。",
       },
       {
         role: "user",
-        content: `以下はSafariの.webarchiveから抽出した本文です。
-
-【資料抜粋】
+        content: `【資料】
 ${relevantText}
 
 【質問】
-${question}
-
-上の資料を優先して答えてください。`,
+${question}`,
       },
     ],
   });
@@ -233,11 +224,7 @@ client.on("messageCreate", async (message) => {
     }
   } catch (error) {
     console.error(error);
-
-    const errorMessage =
-      error && error.message ? error.message : String(error);
-
-    await message.reply(`エラー: ${errorMessage}`);
+    await message.reply(`エラー: ${error.message}`);
   }
 });
 
