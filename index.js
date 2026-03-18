@@ -2,9 +2,7 @@ import { Client, GatewayIntentBits } from "discord.js";
 import OpenAI from "openai";
 import fs from "fs";
 import * as cheerio from "cheerio";
-import plist from "@plist/plist";
-
-const parsePlist = plist.parse;
+import { parse } from "@plist/plist";
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -41,11 +39,11 @@ function normalizeWhitespace(text) {
 function extractMainHtmlFromWebarchive(filePath) {
   const raw = fs.readFileSync(filePath);
 
-  if (typeof parsePlist !== "function") {
-    throw new Error("parsePlist が利用できない");
+  if (typeof parse !== "function") {
+    throw new Error("plist の parse が利用できない");
   }
 
-  const parsed = parsePlist(bufferToArrayBuffer(raw));
+  const parsed = parse(bufferToArrayBuffer(raw));
 
   if (!parsed || typeof parsed !== "object") {
     throw new Error("webarchive の plist 解析に失敗した");
@@ -57,6 +55,7 @@ function extractMainHtmlFromWebarchive(filePath) {
   }
 
   const data = main.WebResourceData;
+  const mime = main.WebResourceMIMEType || "";
   const encoding =
     typeof main.WebResourceTextEncodingName === "string"
       ? main.WebResourceTextEncodingName.toLowerCase()
@@ -69,8 +68,14 @@ function extractMainHtmlFromWebarchive(filePath) {
     htmlBuffer = Buffer.from(data);
   } else if (Array.isArray(data)) {
     htmlBuffer = Buffer.from(data);
+  } else if (data?.buffer instanceof ArrayBuffer) {
+    htmlBuffer = Buffer.from(data.buffer);
   } else {
     throw new Error("WebResourceData の形式が想定外");
+  }
+
+  if (mime && !String(mime).includes("html")) {
+    console.warn(`Main resource MIME type: ${mime}`);
   }
 
   try {
@@ -182,15 +187,19 @@ async function answerWithArchive(question) {
       {
         role: "system",
         content:
-          "あなたはスマスロ・パチスロの情報整理が得意なアシスタントです。資料ベースで回答してください。",
+          "あなたはスマスロ・パチスロの情報整理が得意なアシスタントです。回答は必ず与えられた資料の内容を優先して、日本語で分かりやすく答えてください。資料に根拠が薄い場合は断定しすぎず、『資料上では』『この資料の範囲では』と前置きしてください。",
       },
       {
         role: "user",
-        content: `【資料】
+        content: `以下はSafariの.webarchiveから抽出した本文です。
+
+【資料抜粋】
 ${relevantText}
 
 【質問】
-${question}`,
+${question}
+
+上の資料を優先して答えてください。`,
       },
     ],
   });
@@ -224,7 +233,9 @@ client.on("messageCreate", async (message) => {
     }
   } catch (error) {
     console.error(error);
-    await message.reply(`エラー: ${error.message}`);
+    const errorMessage =
+      error && error.message ? error.message : String(error);
+    await message.reply(`エラー: ${errorMessage}`);
   }
 });
 
