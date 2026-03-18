@@ -9,7 +9,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FILE_PATH = "./tensei.webarchive";
 
 const MAX_DISCORD_REPLY_LENGTH = 1800;
-const MAX_CONTEXT_LENGTH = 12000;
+const MAX_CONTEXT_LENGTH = 14000;
 const MAX_IMAGES_TO_SEND = 6;
 const MIN_IMAGE_BYTES = 8 * 1024;
 
@@ -51,21 +51,10 @@ function describeValue(value) {
 }
 
 function decodeWebResourceData(data) {
-  if (Buffer.isBuffer(data)) {
-    return data;
-  }
-
-  if (data instanceof Uint8Array) {
-    return Buffer.from(data);
-  }
-
-  if (data instanceof ArrayBuffer) {
-    return Buffer.from(new Uint8Array(data));
-  }
-
-  if (Array.isArray(data)) {
-    return Buffer.from(data);
-  }
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof Uint8Array) return Buffer.from(data);
+  if (data instanceof ArrayBuffer) return Buffer.from(new Uint8Array(data));
+  if (Array.isArray(data)) return Buffer.from(data);
 
   if (typeof data === "string") {
     const trimmed = data.trim();
@@ -73,11 +62,9 @@ function decodeWebResourceData(data) {
     if (/^[A-Za-z0-9+/=\s]+$/.test(trimmed) && trimmed.length > 0) {
       try {
         const base64Buf = Buffer.from(trimmed.replace(/\s+/g, ""), "base64");
-        if (base64Buf.length > 0) {
-          return base64Buf;
-        }
+        if (base64Buf.length > 0) return base64Buf;
       } catch {
-        // 通常文字列として続行
+        // fallthrough
       }
     }
 
@@ -85,28 +72,15 @@ function decodeWebResourceData(data) {
   }
 
   if (data && typeof data === "object") {
-    if (Buffer.isBuffer(data.data)) {
-      return data.data;
-    }
-
-    if (data.data instanceof Uint8Array) {
-      return Buffer.from(data.data);
-    }
-
-    if (data.data instanceof ArrayBuffer) {
-      return Buffer.from(new Uint8Array(data.data));
-    }
-
-    if (Array.isArray(data.data)) {
-      return Buffer.from(data.data);
-    }
+    if (Buffer.isBuffer(data.data)) return data.data;
+    if (data.data instanceof Uint8Array) return Buffer.from(data.data);
+    if (data.data instanceof ArrayBuffer) return Buffer.from(new Uint8Array(data.data));
+    if (Array.isArray(data.data)) return Buffer.from(data.data);
 
     if (typeof data.data === "string") {
       try {
         const buf = Buffer.from(data.data.replace(/\s+/g, ""), "base64");
-        if (buf.length > 0) {
-          return buf;
-        }
+        if (buf.length > 0) return buf;
       } catch {
         return Buffer.from(data.data, "utf-8");
       }
@@ -115,9 +89,7 @@ function decodeWebResourceData(data) {
     if (typeof data.value === "string") {
       try {
         const buf = Buffer.from(data.value.replace(/\s+/g, ""), "base64");
-        if (buf.length > 0) {
-          return buf;
-        }
+        if (buf.length > 0) return buf;
       } catch {
         return Buffer.from(data.value, "utf-8");
       }
@@ -129,16 +101,6 @@ function decodeWebResourceData(data) {
 
     if (typeof data.raw === "string") {
       return Buffer.from(data.raw.replace(/\s+/g, ""), "base64");
-    }
-
-    if (
-      typeof data.toString === "function" &&
-      data.toString !== Object.prototype.toString
-    ) {
-      const str = data.toString();
-      if (str && str !== "[object Object]") {
-        return Buffer.from(str, "utf-8");
-      }
     }
   }
 
@@ -196,8 +158,7 @@ function htmlToCleanText(html) {
   const title = $("title").first().text().trim();
   const bodyText = $("body").text();
 
-  const merged = [title, bodyText].filter(Boolean).join("\n\n");
-  return normalizeWhitespace(merged);
+  return normalizeWhitespace([title, bodyText].filter(Boolean).join("\n\n"));
 }
 
 function buildKeywordList(question) {
@@ -211,29 +172,89 @@ function buildKeywordList(question) {
     .map((w) => w.trim())
     .filter((w) => w.length >= 2);
 
-  return [...new Set(words)].slice(0, 15);
+  return [...new Set(words)].slice(0, 20);
+}
+
+function extractQuestionConditions(question) {
+  const q = question.toLowerCase();
+
+  return {
+    asksExpectedValue:
+      /期待値|何円|円で|いくら|出玉率|機械割/.test(question),
+    asksSummary:
+      /要約|まとめ|教えて|内容/.test(question),
+    resetAfter:
+      /リセット後|設定変更後|設定変更/.test(question),
+    afterAT:
+      /at後|at終了後/.test(q) || /ＡＴ後|AT後|AT終了後/.test(question),
+    fromZero:
+      /0あべし|０あべし/.test(question),
+    from256:
+      /256あべし/.test(question),
+    shutterSnipe:
+      /シャッター狙い/.test(question),
+    shutterAriExplicit:
+      /シャッター有り|シャッターあり|有り確定|あり確定/.test(question),
+    shutterNashiExplicit:
+      /シャッター無し|シャッターなし/.test(question),
+  };
+}
+
+function buildConditionGuidance(question) {
+  const c = extractQuestionConditions(question);
+  const lines = [];
+
+  lines.push("【質問条件の整理】");
+
+  if (c.resetAfter) lines.push("- 『リセット後 / 設定変更後』が指定されている");
+  if (c.afterAT) lines.push("- 『AT後』が指定されている");
+  if (c.fromZero) lines.push("- 『0あべし開始』が指定されている");
+  if (c.from256) lines.push("- 『256あべし開始』が指定されている");
+  if (c.shutterSnipe) lines.push("- 『シャッター狙い』がテーマ");
+  if (c.shutterAriExplicit) lines.push("- 『シャッター有り』が明示指定されている");
+  if (c.shutterNashiExplicit) lines.push("- 『シャッター無し』が明示指定されている");
+
+  lines.push("");
+  lines.push("【厳守ルール】");
+  lines.push("- 質問条件と一致しない表や数値は答えに使わない");
+  lines.push("- 特に『リセット後』と『AT後』は別物として扱う");
+  lines.push("- 特に『シャッター狙い』と『シャッター有り確定時』は別物として扱う");
+  lines.push("- ユーザーが明示していない限り、『シャッター有り』の数値を『シャッター狙い』の数値として流用しない");
+  lines.push("- 条件が一致する数値を見つけられない場合、勝手に近い表を採用せず『資料上で完全一致の数値は確認できない』と答える");
+  lines.push("- 数値を答える時は、『どの条件の数値か』を必ず1行目に明記する");
+
+  return lines.join("\n");
 }
 
 function extractRelevantChunks(fullText, question) {
   const keywords = buildKeywordList(question);
-
-  if (keywords.length === 0) {
-    return fullText.slice(0, MAX_CONTEXT_LENGTH);
-  }
-
+  const conditions = extractQuestionConditions(question);
   const text = fullText;
   const chunks = [];
   const seen = new Set();
 
-  for (const keyword of keywords) {
+  const manualKeywords = [];
+
+  if (conditions.resetAfter) manualKeywords.push("設定変更", "設定変更後", "リセット");
+  if (conditions.afterAT) manualKeywords.push("AT後", "AT終了後");
+  if (conditions.fromZero) manualKeywords.push("0あべし");
+  if (conditions.from256) manualKeywords.push("256あべし");
+  if (conditions.shutterSnipe) manualKeywords.push("シャッター狙い");
+  if (conditions.shutterAriExplicit) manualKeywords.push("シャッター有り", "シャッターあり");
+  if (conditions.shutterNashiExplicit) manualKeywords.push("シャッター無し", "シャッターなし");
+  if (conditions.asksExpectedValue) manualKeywords.push("期待値", "円", "出玉率");
+
+  const mergedKeywords = [...new Set([...keywords, ...manualKeywords])];
+
+  for (const keyword of mergedKeywords) {
     let startIndex = 0;
 
     while (true) {
       const idx = text.toLowerCase().indexOf(keyword.toLowerCase(), startIndex);
       if (idx === -1) break;
 
-      const start = Math.max(0, idx - 600);
-      const end = Math.min(text.length, idx + 1600);
+      const start = Math.max(0, idx - 900);
+      const end = Math.min(text.length, idx + 2200);
       const snippet = text.slice(start, end).trim();
 
       if (!seen.has(snippet)) {
@@ -299,19 +320,11 @@ function extractImageInputsFromParsedArchive(parsed) {
     try {
       const mime = String(resource.WebResourceMIMEType || "").toLowerCase();
 
-      if (!isSupportedImageMime(mime)) {
-        continue;
-      }
-
-      if (!resource.WebResourceData) {
-        continue;
-      }
+      if (!isSupportedImageMime(mime)) continue;
+      if (!resource.WebResourceData) continue;
 
       const buffer = decodeWebResourceData(resource.WebResourceData);
-
-      if (!buffer || buffer.length < MIN_IMAGE_BYTES) {
-        continue;
-      }
+      if (!buffer || buffer.length < MIN_IMAGE_BYTES) continue;
 
       resource._decodedBuffer = buffer;
 
@@ -367,6 +380,7 @@ async function answerWithArchive(question) {
   const fullText = htmlToCleanText(html);
   const relevantText = extractRelevantChunks(fullText, question);
   const imageInputs = extractImageInputsFromParsedArchive(parsed);
+  const conditionGuidance = buildConditionGuidance(question);
 
   const userContent = [
     {
@@ -379,27 +393,29 @@ ${relevantText}
 【補足】
 このwebarchive内に含まれる画像も添付しています。画像内の表・数値・注釈・見出しも確認してください。
 
+${conditionGuidance}
+
 【質問】
 ${question}
 
-指示:
-- 本文と画像の両方を見て答える
-- 画像内の表・数値・見出しも可能な限り反映する
-- 不明な点は不明と書く
-- 結論を先に書く
-- パチスロ/期待値資料なら、狙い目・条件・数値を優先してまとめる`,
+【出力ルール】
+- 条件に完全一致する数値だけ答える
+- 一致しない近い条件の数値は使わない
+- 数値回答の1行目で、どの条件の数値か必ず明記する
+- 条件一致の数値が見つからない場合は、その旨を明記する
+- パチスロ期待値の質問では、結論→根拠→補足の順に短く答える`,
     },
     ...imageInputs,
   ];
 
   const completion = await openai.chat.completions.create({
     model: "gpt-4.1-mini",
-    temperature: 0.2,
+    temperature: 0.0,
     messages: [
       {
         role: "system",
         content:
-          "あなたはスマスロ・パチスロの情報整理が得意なアシスタントです。回答は必ず与えられた資料の内容を優先して、日本語で分かりやすく答えてください。資料に根拠が薄い場合は断定しすぎず、『資料上では』『画像上では』などと前置きしてください。",
+          "あなたはパチスロ期待値稼働のプロです。資料の条件差を厳密に見分けてください。『リセット後』『AT後』『シャッター狙い』『シャッター有り確定』『シャッター無し』は別条件です。似た数値を流用せず、条件一致を最優先してください。",
       },
       {
         role: "user",
