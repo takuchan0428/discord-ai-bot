@@ -38,6 +38,10 @@ function normalizeWhitespace(text) {
     .trim();
 }
 
+function normalizeCompact(text) {
+  return String(text || "").replace(/\s+/g, "").trim();
+}
+
 function decodeWebResourceData(data) {
   if (Buffer.isBuffer(data)) return data;
   if (data instanceof Uint8Array) return Buffer.from(data);
@@ -241,10 +245,6 @@ function extractRelevantChunks(fullText, question) {
   return chunks.join("\n\n---\n\n").slice(0, MAX_CONTEXT_LENGTH);
 }
 
-function normalizeCompact(text) {
-  return String(text || "").replace(/\s+/g, "").trim();
-}
-
 function findNearestHeadingText($, tableEl) {
   const results = [];
 
@@ -316,6 +316,7 @@ function detectColumnIndexes(headers) {
     notes: indexOfAny(["備考", "条件", "補足"]),
     time: indexOfAny(["消化時間"]),
     wage: indexOfAny(["時給"]),
+    hitRate: indexOfAny(["初当り", "初当たり"]),
   };
 }
 
@@ -323,15 +324,17 @@ function scoreTableMeta(title, headerCells, contextText) {
   let score = 0;
   const full = normalizeCompact([title, ...headerCells, contextText].join(" "));
 
-  if (full.includes("シャッター狙い")) score += 10;
-  if (full.includes("設定変更後") || full.includes("リセット後") || full.includes("設定変更")) score += 10;
-  if (full.includes("あべし")) score += 8;
-  if (full.includes("期待値")) score += 8;
-  if (full.includes("出玉率")) score += 6;
+  if (full.includes("シャッター狙い")) score += 12;
+  if (full.includes("設定変更後") || full.includes("リセット後") || full.includes("設定変更")) score += 12;
+  if (full.includes("あべし")) score += 10;
+  if (full.includes("期待値")) score += 10;
+  if (full.includes("出玉率")) score += 8;
+  if (full.includes("消化時間")) score += 4;
+  if (full.includes("時給")) score += 4;
 
-  if (full.includes("ランキング")) score -= 8;
-  if (full.includes("優先順位")) score -= 8;
-  if (full.includes("105%以上")) score -= 6;
+  if (full.includes("ランキング")) score -= 15;
+  if (full.includes("優先順位")) score -= 15;
+  if (full.includes("105%以上")) score -= 8;
 
   return score;
 }
@@ -343,8 +346,8 @@ function extractRowsFromHtmlTables(html) {
   $("table").each((_, tableEl) => {
     const table = $(tableEl);
     const heading = findNearestHeadingText($, table);
-    const parentText = normalizeWhitespace(table.parent().text()).slice(0, 500);
-    const tableText = normalizeWhitespace(table.text()).slice(0, 500);
+    const parentText = normalizeWhitespace(table.parent().text()).slice(0, 600);
+    const tableText = normalizeWhitespace(table.text()).slice(0, 600);
     const contextText = normalizeWhitespace([heading, parentText, tableText].join(" / "));
     const conditionGroup = classifyConditionGroup(contextText);
 
@@ -368,7 +371,7 @@ function extractRowsFromHtmlTables(html) {
     const firstRow = rowsRaw[0].map((v) => normalizeCompact(v));
     const headerLikeScore =
       firstRow.filter((v) =>
-        ["あべし", "初当り", "期待値", "出玉率", "消化時間", "時給", "シミュ回数"].some((k) =>
+        ["あべし", "初当り", "初当たり", "期待値", "出玉率", "消化時間", "時給", "シミュ回数"].some((k) =>
           v.includes(k)
         )
       ).length;
@@ -384,7 +387,6 @@ function extractRowsFromHtmlTables(html) {
 
     for (const cells of dataRows) {
       const compactCells = cells.map((c) => normalizeCompact(c));
-      const joined = compactCells.join(" ");
 
       let rowLabel = "";
       let startAveshi = "";
@@ -540,10 +542,10 @@ ${relevantText}
       "condition_group": "設定変更後 / AT後 / シャッター狙い / 不明",
       "rows": [
         {
-          "row_label": "32-",
-          "start_aveshi": "32",
-          "expected_value_yen": "2203円",
-          "payout_rate": "113.6%",
+          "row_label": "64-",
+          "start_aveshi": "64",
+          "expected_value_yen": "1712円",
+          "payout_rate": "109.1%",
           "notes": "画像表から読める条件"
         }
       ]
@@ -603,6 +605,7 @@ function rowMatchesQuestion(row, table, conditions) {
   const title = normalizeConditionGroup(table.table_title);
   const notes = normalizeNotes(row.notes);
   const context = normalizeConditionGroup(table.context_text || "");
+  const full = `${conditionGroup} ${title} ${notes} ${context}`;
 
   if (conditions.startAveshi !== null) {
     const target = String(conditions.startAveshi);
@@ -616,72 +619,48 @@ function rowMatchesQuestion(row, table, conditions) {
   }
 
   if (conditions.resetAfter) {
-    const ok =
-      conditionGroup.includes("設定変更後") ||
-      conditionGroup.includes("設定変更") ||
-      conditionGroup.includes("リセット後") ||
-      title.includes("設定変更後") ||
-      title.includes("設定変更") ||
-      title.includes("リセット後") ||
-      context.includes("設定変更後") ||
-      context.includes("設定変更") ||
-      context.includes("リセット後") ||
-      notes.includes("設定変更後") ||
-      notes.includes("設定変更") ||
-      notes.includes("リセット後");
-
+    const ok = /設定変更後|設定変更|リセット後/.test(full);
     if (!ok) return false;
+    if (/at後|at終了後/.test(full) && !/設定変更後|設定変更|リセット後/.test(full)) {
+      return false;
+    }
   }
 
   if (conditions.afterAT) {
-    const ok =
-      conditionGroup.includes("at後") ||
-      conditionGroup.includes("at終了後") ||
-      title.includes("at後") ||
-      title.includes("at終了後") ||
-      context.includes("at後") ||
-      context.includes("at終了後") ||
-      notes.includes("at後") ||
-      notes.includes("at終了後");
-
+    const ok = /at後|at終了後/.test(full);
     if (!ok) return false;
   }
 
   if (conditions.shutterSnipe) {
-    const ok =
-      conditionGroup.includes("シャッター狙い") ||
-      title.includes("シャッター狙い") ||
-      context.includes("シャッター狙い") ||
-      notes.includes("シャッター狙い");
-
+    const ok = /シャッター狙い/.test(full);
     if (!ok) return false;
   }
 
   if (conditions.shutterAriExplicit) {
-    const ok =
-      conditionGroup.includes("シャッター有り") ||
-      title.includes("シャッター有り") ||
-      context.includes("シャッター有り") ||
-      notes.includes("シャッター有り") ||
-      notes.includes("シャッターあり") ||
-      notes.includes("有り確定") ||
-      notes.includes("あり確定");
-
+    const ok = /シャッター有り|シャッターあり|有り確定|あり確定/.test(full);
     if (!ok) return false;
   }
 
   if (conditions.shutterNashiExplicit) {
-    const ok =
-      conditionGroup.includes("シャッター無し") ||
-      title.includes("シャッター無し") ||
-      context.includes("シャッター無し") ||
-      notes.includes("シャッター無し") ||
-      notes.includes("シャッターなし");
-
+    const ok = /シャッター無し|シャッターなし/.test(full);
     if (!ok) return false;
   }
 
   return true;
+}
+
+function buildCandidate(table, row) {
+  return {
+    table_title: table.table_title || "",
+    condition_group: table.condition_group || "",
+    context_text: table.context_text || "",
+    table_quality_score: Number(table.table_quality_score || 0),
+    row_label: row.row_label || "",
+    start_aveshi: row.start_aveshi || "",
+    expected_value_yen: cleanYenText(row.expected_value_yen || ""),
+    payout_rate: row.payout_rate || "",
+    notes: row.notes || "",
+  };
 }
 
 function findBestMatches(extractedTables, conditions) {
@@ -694,17 +673,7 @@ function findBestMatches(extractedTables, conditions) {
     const rows = Array.isArray(table.rows) ? table.rows : [];
 
     for (const row of rows) {
-      const candidate = {
-        table_title: table.table_title || "",
-        condition_group: table.condition_group || "",
-        context_text: table.context_text || "",
-        table_quality_score: Number(table.table_quality_score || 0),
-        row_label: row.row_label || "",
-        start_aveshi: row.start_aveshi || "",
-        expected_value_yen: cleanYenText(row.expected_value_yen || ""),
-        payout_rate: row.payout_rate || "",
-        notes: row.notes || "",
-      };
+      const candidate = buildCandidate(table, row);
 
       if (rowMatchesQuestion(row, table, conditions)) {
         exactMatches.push(candidate);
@@ -717,35 +686,70 @@ function findBestMatches(extractedTables, conditions) {
   return { exactMatches, nearbyCandidates };
 }
 
+function applyStrictPreference(matches, conditions) {
+  let filtered = [...matches];
+
+  if (conditions.resetAfter) {
+    const resetPreferred = filtered.filter((m) => {
+      const full = `${m.condition_group} ${m.table_title} ${m.notes} ${m.context_text}`;
+      return /設定変更後|設定変更|リセット後/.test(full) && !/AT後|AT終了後/.test(full);
+    });
+    if (resetPreferred.length > 0) filtered = resetPreferred;
+  }
+
+  if (conditions.afterAT) {
+    const atPreferred = filtered.filter((m) => {
+      const full = `${m.condition_group} ${m.table_title} ${m.notes} ${m.context_text}`;
+      return /AT後|AT終了後/.test(full);
+    });
+    if (atPreferred.length > 0) filtered = atPreferred;
+  }
+
+  if (conditions.shutterSnipe) {
+    const shutterPreferred = filtered.filter((m) => {
+      const full = `${m.condition_group} ${m.table_title} ${m.notes} ${m.context_text}`;
+      return /シャッター狙い/.test(full);
+    });
+    if (shutterPreferred.length > 0) filtered = shutterPreferred;
+  }
+
+  if (conditions.asksExpectedValue) {
+    const withExpectedValue = filtered.filter((m) => /円/.test(m.expected_value_yen));
+    if (withExpectedValue.length > 0) filtered = withExpectedValue;
+  }
+
+  return filtered;
+}
+
 function pickBestExactMatch(matches, conditions) {
   if (matches.length === 0) return null;
 
-  const scored = matches.map((m) => {
+  const strictlyFiltered = applyStrictPreference(matches, conditions);
+
+  const scored = strictlyFiltered.map((m) => {
     let score = 0;
 
     if (conditions.startAveshi !== null) {
-      if (String(m.start_aveshi) === String(conditions.startAveshi)) score += 20;
-      if (String(m.row_label) === `${conditions.startAveshi}-`) score += 20;
+      if (String(m.start_aveshi) === String(conditions.startAveshi)) score += 30;
+      if (String(m.row_label) === `${conditions.startAveshi}-`) score += 30;
     }
 
-    const group = String(m.condition_group || "");
-    const notes = String(m.notes || "");
-    const title = String(m.table_title || "");
-    const context = String(m.context_text || "");
-    const full = group + notes + title + context;
+    const full = `${m.condition_group} ${m.notes} ${m.table_title} ${m.context_text}`;
 
-    if (conditions.resetAfter && /設定変更後|設定変更|リセット後/.test(full)) score += 12;
-    if (conditions.afterAT && /AT後|AT終了後/.test(full)) score += 12;
-    if (conditions.shutterSnipe && /シャッター狙い/.test(full)) score += 12;
-    if (conditions.shutterAriExplicit && /シャッター有り|シャッターあり|有り確定|あり確定/.test(full)) score += 6;
-    if (conditions.shutterNashiExplicit && /シャッター無し|シャッターなし/.test(full)) score += 6;
+    if (conditions.resetAfter && /設定変更後|設定変更|リセット後/.test(full)) score += 20;
+    if (conditions.afterAT && /AT後|AT終了後/.test(full)) score += 20;
+    if (conditions.shutterSnipe && /シャッター狙い/.test(full)) score += 20;
+    if (conditions.shutterAriExplicit && /シャッター有り|シャッターあり|有り確定|あり確定/.test(full)) score += 8;
+    if (conditions.shutterNashiExplicit && /シャッター無し|シャッターなし/.test(full)) score += 8;
 
-    if (m.expected_value_yen && /円/.test(m.expected_value_yen)) score += 20;
-    if (m.payout_rate && /%/.test(m.payout_rate)) score += 5;
+    if (m.expected_value_yen && /円/.test(m.expected_value_yen)) score += 25;
+    if (m.payout_rate && /%/.test(m.payout_rate)) score += 8;
 
     score += Number(m.table_quality_score || 0);
 
-    if (/ランキング|優先順位|105%以上/.test(full)) score -= 12;
+    if (/ランキング|優先順位|105%以上/.test(full)) score -= 20;
+    if (/AT後|AT終了後/.test(full) && conditions.resetAfter) score -= 50;
+    if (/設定変更後|設定変更|リセット後/.test(full) && conditions.afterAT) score -= 50;
 
     return { ...m, _score: score };
   });
