@@ -36,6 +36,112 @@ function normalizeWhitespace(text) {
     .trim();
 }
 
+function describeValue(value) {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (Buffer.isBuffer(value)) return "Buffer";
+  if (value instanceof Uint8Array) return "Uint8Array";
+  if (value instanceof ArrayBuffer) return "ArrayBuffer";
+  if (Array.isArray(value)) return "Array";
+  return typeof value === "object"
+    ? `object keys: ${Object.keys(value).join(", ")}`
+    : typeof value;
+}
+
+function decodeWebResourceData(data) {
+  if (Buffer.isBuffer(data)) {
+    return data;
+  }
+
+  if (data instanceof Uint8Array) {
+    return Buffer.from(data);
+  }
+
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(new Uint8Array(data));
+  }
+
+  if (Array.isArray(data)) {
+    return Buffer.from(data);
+  }
+
+  if (typeof data === "string") {
+    const trimmed = data.trim();
+
+    // base64 っぽい文字列なら base64 として読む
+    if (/^[A-Za-z0-9+/=\s]+$/.test(trimmed) && trimmed.length > 0) {
+      try {
+        const base64Buf = Buffer.from(trimmed.replace(/\s+/g, ""), "base64");
+        if (base64Buf.length > 0) {
+          return base64Buf;
+        }
+      } catch {
+        // 通常文字列として続行
+      }
+    }
+
+    return Buffer.from(trimmed, "utf-8");
+  }
+
+  if (data && typeof data === "object") {
+    // Safari系でたまにこういう形になることを広めに吸収
+    if (Buffer.isBuffer(data.data)) {
+      return data.data;
+    }
+
+    if (data.data instanceof Uint8Array) {
+      return Buffer.from(data.data);
+    }
+
+    if (data.data instanceof ArrayBuffer) {
+      return Buffer.from(new Uint8Array(data.data));
+    }
+
+    if (Array.isArray(data.data)) {
+      return Buffer.from(data.data);
+    }
+
+    if (typeof data.data === "string") {
+      try {
+        const buf = Buffer.from(data.data.replace(/\s+/g, ""), "base64");
+        if (buf.length > 0) {
+          return buf;
+        }
+      } catch {
+        return Buffer.from(data.data, "utf-8");
+      }
+    }
+
+    if (typeof data.value === "string") {
+      try {
+        const buf = Buffer.from(data.value.replace(/\s+/g, ""), "base64");
+        if (buf.length > 0) {
+          return buf;
+        }
+      } catch {
+        return Buffer.from(data.value, "utf-8");
+      }
+    }
+
+    if (typeof data.base64 === "string") {
+      return Buffer.from(data.base64.replace(/\s+/g, ""), "base64");
+    }
+
+    if (typeof data.raw === "string") {
+      return Buffer.from(data.raw.replace(/\s+/g, ""), "base64");
+    }
+
+    if (typeof data.toString === "function" && data.toString !== Object.prototype.toString) {
+      const str = data.toString();
+      if (str && str !== "[object Object]") {
+        return Buffer.from(str, "utf-8");
+      }
+    }
+  }
+
+  throw new Error(`WebResourceData の形式が想定外: ${describeValue(data)}`);
+}
+
 function extractMainHtmlFromWebarchive(filePath) {
   const raw = fs.readFileSync(filePath);
 
@@ -61,18 +167,7 @@ function extractMainHtmlFromWebarchive(filePath) {
       ? main.WebResourceTextEncodingName.toLowerCase()
       : "utf-8";
 
-  let htmlBuffer;
-  if (Buffer.isBuffer(data)) {
-    htmlBuffer = data;
-  } else if (data instanceof Uint8Array) {
-    htmlBuffer = Buffer.from(data);
-  } else if (Array.isArray(data)) {
-    htmlBuffer = Buffer.from(data);
-  } else if (data?.buffer instanceof ArrayBuffer) {
-    htmlBuffer = Buffer.from(data.buffer);
-  } else {
-    throw new Error("WebResourceData の形式が想定外");
-  }
+  const htmlBuffer = decodeWebResourceData(data);
 
   if (mime && !String(mime).includes("html")) {
     console.warn(`Main resource MIME type: ${mime}`);
