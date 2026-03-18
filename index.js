@@ -8,8 +8,17 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FILE_PATH = "./tensei.webarchive";
 
+// Discordに返す最大文字数
 const MAX_DISCORD_REPLY_LENGTH = 1800;
+
+// テキスト資料として渡す最大長
 const MAX_CONTEXT_LENGTH = 12000;
+
+// 画像は多すぎると重いので上限をかける
+const MAX_IMAGES_TO_SEND = 6;
+
+// 小さすぎる画像はアイコン類の可能性が高いので除外
+const MIN_IMAGE_BYTES = 8 * 1024; // 8KB
 
 const client = new Client({
   intents: [
@@ -68,7 +77,6 @@ function decodeWebResourceData(data) {
   if (typeof data === "string") {
     const trimmed = data.trim();
 
-    // base64 っぽい文字列なら base64 として読む
     if (/^[A-Za-z0-9+/=\s]+$/.test(trimmed) && trimmed.length > 0) {
       try {
         const base64Buf = Buffer.from(trimmed.replace(/\s+/g, ""), "base64");
@@ -84,7 +92,6 @@ function decodeWebResourceData(data) {
   }
 
   if (data && typeof data === "object") {
-    // Safari系でたまにこういう形になることを広めに吸収
     if (Buffer.isBuffer(data.data)) {
       return data.data;
     }
@@ -131,7 +138,10 @@ function decodeWebResourceData(data) {
       return Buffer.from(data.raw.replace(/\s+/g, ""), "base64");
     }
 
-    if (typeof data.toString === "function" && data.toString !== Object.prototype.toString) {
+    if (
+      typeof data.toString === "function" &&
+      data.toString !== Object.prototype.toString
+    ) {
       const str = data.toString();
       if (str && str !== "[object Object]") {
         return Buffer.from(str, "utf-8");
@@ -142,7 +152,7 @@ function decodeWebResourceData(data) {
   throw new Error(`WebResourceData の形式が想定外: ${describeValue(data)}`);
 }
 
-function extractMainHtmlFromWebarchive(filePath) {
+function parseWebarchive(filePath) {
   const raw = fs.readFileSync(filePath);
 
   if (typeof parse !== "function") {
@@ -155,7 +165,12 @@ function extractMainHtmlFromWebarchive(filePath) {
     throw new Error("webarchive の plist 解析に失敗した");
   }
 
+  return parsed;
+}
+
+function extractMainHtmlFromParsedArchive(parsed) {
   const main = parsed.WebMainResource;
+
   if (!main || !main.WebResourceData) {
     throw new Error("WebMainResource が見つからない");
   }
@@ -249,6 +264,92 @@ function extractRelevantChunks(fullText, question) {
   return chunks.join("\n\n---\n\n").slice(0, MAX_CONTEXT_LENGTH);
 }
 
+function isSupportedImageMime(mime) {
+  return [
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/webp",
+    "image/gif",
+  ].includes(String(mime).toLowerCase());
+}
+
+function scoreImageResource(resource) {
+  const url = resource.WebResourceURL || "";
+  const mime = String(resource.WebResourceMIMEType || "").toLowerCase();
+  const data = resource._decodedBuffer;
+  let score = data ? data.length : 0;
+
+  // 記事内の図表っぽい画像を少し優先
+  if (/chart|graph|table|img|figure|image|capture|screen|jpg|jpeg|png|webp/i.test(url)) {
+    score += 5000;
+  }
+
+  // あまりに小さい画像は低優先
+  if (data && data.length < 20 * 1024) {
+    score -= 8000;
+  }
+
+  // gifは装飾のことが多いので少し下げる
+  if (mime === "image/gif") {
+    score -= 3000;
+  }
+
+  return score;
+}
+
+function extractImageInputsFromParsedArchive(parsed) {
+  const subresources = Array.isArray(parsed.WebSubresources)
+    ? parsed.WebSubresources
+    : [];
+
+  const candidates = [];
+
+  for (const resource of subresources) {
+    try {
+      const mime = String(resource.WebResourceMIMEType || "").toLowerCase();
+
+      if (!isSupportedImageMime(mime)) {
+        continue;
+      }
+
+      if (!resource.WebResourceData) {
+        continue;
+      }
+
+      const buffer = decodeWebResourceData(resource.WebResourceData);
+
+      if (!buffer || buffer.length < MIN_IMAGE_BYTES) {
+        continue;
+      }
+
+      resource._decodedBuffer = buffer;
+
+      candidates.push({
+        mime,
+        url: resource.WebResourceURL || "",
+        buffer,
+        score: scoreImageResource(resource),
+      });
+    } catch (error) {
+      console.warn("画像サブリソースの解析をスキップ:", error?.message || error);
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+
+  return candidates.slice(0, MAX_IMAGES_TO_SEND).map((item, index) => {
+    const base64 = item.buffer.toString("base64");
+    return {
+      type: "image_url",
+      image_url: {
+        url: `data:${item.mime};base64,${base64}`,
+      },
+      label: item.url || `image_${index + 1}`,
+    };
+  });
+}
+
 function splitForDiscord(text) {
   if (text.length <= MAX_DISCORD_REPLY_LENGTH) return [text];
 
@@ -271,22 +372,16 @@ function splitForDiscord(text) {
 }
 
 async function answerWithArchive(question) {
-  const html = extractMainHtmlFromWebarchive(FILE_PATH);
+  const parsed = parseWebarchive(FILE_PATH);
+  const html = extractMainHtmlFromParsedArchive(parsed);
   const fullText = htmlToCleanText(html);
   const relevantText = extractRelevantChunks(fullText, question);
+  const imageInputs = extractImageInputsFromParsedArchive(parsed);
 
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    temperature: 0.2,
-    messages: [
-      {
-        role: "system",
-        content:
-          "あなたはスマスロ・パチスロの情報整理が得意なアシスタントです。回答は必ず与えられた資料の内容を優先して、日本語で分かりやすく答えてください。資料に根拠が薄い場合は断定しすぎず、『資料上では』『この資料の範囲では』と前置きしてください。",
-      },
-      {
-        role: "user",
-        content: `以下はSafariの.webarchiveから抽出した本文です。
+  const userContent = [
+    {
+      type: "text",
+      text: `以下はSafariの.webarchiveから抽出した本文です。
 
 【資料抜粋】
 ${relevantText}
@@ -294,9 +389,31 @@ ${relevantText}
 【質問】
 ${question}
 
-上の資料を優先して答えてください。`,
+指示:
+- 本文と画像の両方を見て答える
+- 画像内の表・数値・見出しも可能な限り反映する
+- 不明な点は不明と書く
+- 結論を先に書く
+- パチスロ/期待値資料なら、狙い目・条件・数値を優先してまとめる`,
+    },
+    ...imageInputs,
+  ];
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0.2,
+    messages: [
+      {
+        role: "system",
+        content:
+          "あなたはスマスロ・パチスロの情報整理が得意なアシスタントです。回答は必ず与えられた資料の内容を優先して、日本語で分かりやすく答えてください。資料に根拠が薄い場合は断定しすぎず、『資料上では』『画像上では』などと前置きしてください。",
+      },
+      {
+        role: "user",
+        content: userContent,
       },
     ],
+    max_tokens: 1200,
   });
 
   return completion.choices[0]?.message?.content || "回答を生成できなかった";
