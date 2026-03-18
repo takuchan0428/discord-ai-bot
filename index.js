@@ -8,17 +8,10 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FILE_PATH = "./tensei.webarchive";
 
-// Discordに返す最大文字数
 const MAX_DISCORD_REPLY_LENGTH = 1800;
-
-// テキスト資料として渡す最大長
 const MAX_CONTEXT_LENGTH = 12000;
-
-// 画像は多すぎると重いので上限をかける
 const MAX_IMAGES_TO_SEND = 6;
-
-// 小さすぎる画像はアイコン類の可能性が高いので除外
-const MIN_IMAGE_BYTES = 8 * 1024; // 8KB
+const MIN_IMAGE_BYTES = 8 * 1024;
 
 const client = new Client({
   intents: [
@@ -280,17 +273,14 @@ function scoreImageResource(resource) {
   const data = resource._decodedBuffer;
   let score = data ? data.length : 0;
 
-  // 記事内の図表っぽい画像を少し優先
   if (/chart|graph|table|img|figure|image|capture|screen|jpg|jpeg|png|webp/i.test(url)) {
     score += 5000;
   }
 
-  // あまりに小さい画像は低優先
   if (data && data.length < 20 * 1024) {
     score -= 8000;
   }
 
-  // gifは装飾のことが多いので少し下げる
   if (mime === "image/gif") {
     score -= 3000;
   }
@@ -338,14 +328,14 @@ function extractImageInputsFromParsedArchive(parsed) {
 
   candidates.sort((a, b) => b.score - a.score);
 
-  return candidates.slice(0, MAX_IMAGES_TO_SEND).map((item, index) => {
+  return candidates.slice(0, MAX_IMAGES_TO_SEND).map((item) => {
     const base64 = item.buffer.toString("base64");
     return {
       type: "image_url",
       image_url: {
         url: `data:${item.mime};base64,${base64}`,
+        detail: "high",
       },
-      label: item.url || `image_${index + 1}`,
     };
   });
 }
@@ -385,6 +375,9 @@ async function answerWithArchive(question) {
 
 【資料抜粋】
 ${relevantText}
+
+【補足】
+このwebarchive内に含まれる画像も添付しています。画像内の表・数値・注釈・見出しも確認してください。
 
 【質問】
 ${question}
