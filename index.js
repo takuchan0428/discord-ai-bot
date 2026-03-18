@@ -241,24 +241,36 @@ function extractRelevantChunks(fullText, question) {
   return chunks.join("\n\n---\n\n").slice(0, MAX_CONTEXT_LENGTH);
 }
 
+function normalizeCompact(text) {
+  return String(text || "").replace(/\s+/g, "").trim();
+}
+
 function findNearestHeadingText($, tableEl) {
+  const results = [];
+
   let node = tableEl.prev();
   let steps = 0;
 
-  while (node.length && steps < 12) {
+  while (node.length && steps < 18) {
     const tag = (node[0]?.tagName || "").toLowerCase();
     const text = normalizeWhitespace(node.text());
 
     if (text) {
-      if (["h1", "h2", "h3", "h4", "h5", "h6"].includes(tag)) return text;
-      if (text.length <= 80) return text;
+      if (["h1", "h2", "h3", "h4", "h5", "h6"].includes(tag)) {
+        results.push(text);
+        break;
+      }
+
+      if (text.length <= 120) {
+        results.push(text);
+      }
     }
 
     node = node.prev();
     steps += 1;
   }
 
-  return "";
+  return normalizeWhitespace(results.reverse().join(" / "));
 }
 
 function classifyConditionGroup(text) {
@@ -274,24 +286,25 @@ function classifyConditionGroup(text) {
 }
 
 function looksLikeAveshiLabel(value) {
-  return /^\d+\s*-$/.test(value) || /^\d+$/.test(value);
+  const s = normalizeCompact(value);
+  return /^\d+-$/.test(s) || /^\d+$/.test(s);
 }
 
 function normalizeRowLabel(value) {
-  const s = String(value || "").replace(/\s+/g, "").trim();
+  const s = normalizeCompact(value);
   if (/^\d+$/.test(s)) return `${s}-`;
   if (/^\d+-$/.test(s)) return s;
   return s;
 }
 
-function extractNumberBeforeUnit(value, unitRegex) {
-  const s = String(value || "").replace(/\s+/g, "");
-  const m = s.match(new RegExp(`(\\d+)${unitRegex}`));
+function extractNumberOnly(value) {
+  const s = normalizeCompact(value);
+  const m = s.match(/(\d+)/);
   return m ? m[1] : "";
 }
 
 function detectColumnIndexes(headers) {
-  const normalized = headers.map((h) => String(h || "").replace(/\s+/g, ""));
+  const normalized = headers.map((h) => normalizeCompact(h));
 
   const indexOfAny = (patterns) =>
     normalized.findIndex((h) => patterns.some((p) => h.includes(p)));
@@ -301,7 +314,26 @@ function detectColumnIndexes(headers) {
     expectedValue: indexOfAny(["期待値"]),
     payoutRate: indexOfAny(["出玉率", "機械割"]),
     notes: indexOfAny(["備考", "条件", "補足"]),
+    time: indexOfAny(["消化時間"]),
+    wage: indexOfAny(["時給"]),
   };
+}
+
+function scoreTableMeta(title, headerCells, contextText) {
+  let score = 0;
+  const full = normalizeCompact([title, ...headerCells, contextText].join(" "));
+
+  if (full.includes("シャッター狙い")) score += 10;
+  if (full.includes("設定変更後") || full.includes("リセット後") || full.includes("設定変更")) score += 10;
+  if (full.includes("あべし")) score += 8;
+  if (full.includes("期待値")) score += 8;
+  if (full.includes("出玉率")) score += 6;
+
+  if (full.includes("ランキング")) score -= 8;
+  if (full.includes("優先順位")) score -= 8;
+  if (full.includes("105%以上")) score -= 6;
+
+  return score;
 }
 
 function extractRowsFromHtmlTables(html) {
@@ -309,45 +341,50 @@ function extractRowsFromHtmlTables(html) {
   const tables = [];
 
   $("table").each((_, tableEl) => {
-    const heading = findNearestHeadingText($, $(tableEl));
-    const surroundingText = normalizeWhitespace(
-      [heading, $(tableEl).parent().text().slice(0, 300)].join(" ")
-    );
-    const conditionGroup = classifyConditionGroup(surroundingText);
+    const table = $(tableEl);
+    const heading = findNearestHeadingText($, table);
+    const parentText = normalizeWhitespace(table.parent().text()).slice(0, 500);
+    const tableText = normalizeWhitespace(table.text()).slice(0, 500);
+    const contextText = normalizeWhitespace([heading, parentText, tableText].join(" / "));
+    const conditionGroup = classifyConditionGroup(contextText);
 
-    const rows = [];
-    const headerCells = [];
-
-    $(tableEl)
-      .find("tr")
-      .each((trIndex, tr) => {
-        const ths = $(tr).find("th");
-        const tds = $(tr).find("td");
-        const cells = [];
-
-        if (ths.length > 0 && trIndex === 0) {
-          ths.each((_, th) => {
-            cells.push(normalizeWhitespace($(th).text()));
-          });
-          headerCells.push(...cells);
-          return;
-        }
-
-        if (tds.length === 0) return;
-
-        tds.each((_, td) => {
-          cells.push(normalizeWhitespace($(td).text()));
+    const trs = table.find("tr");
+    const rowsRaw = [];
+    trs.each((__, tr) => {
+      const row = [];
+      $(tr)
+        .find("th, td")
+        .each((___, cell) => {
+          row.push(normalizeWhitespace($(cell).text()));
         });
+      if (row.length > 0) rowsRaw.push(row);
+    });
 
-        rows.push(cells);
-      });
+    if (rowsRaw.length === 0) return;
+
+    let headerCells = [];
+    let dataRows = rowsRaw;
+
+    const firstRow = rowsRaw[0].map((v) => normalizeCompact(v));
+    const headerLikeScore =
+      firstRow.filter((v) =>
+        ["あべし", "初当り", "期待値", "出玉率", "消化時間", "時給", "シミュ回数"].some((k) =>
+          v.includes(k)
+        )
+      ).length;
+
+    if (headerLikeScore >= 2) {
+      headerCells = rowsRaw[0];
+      dataRows = rowsRaw.slice(1);
+    }
 
     const col = detectColumnIndexes(headerCells);
-
+    const tableQualityScore = scoreTableMeta(heading, headerCells, contextText);
     const parsedRows = [];
 
-    for (const cells of rows) {
-      const joined = cells.join(" ").replace(/\s+/g, " ").trim();
+    for (const cells of dataRows) {
+      const compactCells = cells.map((c) => normalizeCompact(c));
+      const joined = compactCells.join(" ");
 
       let rowLabel = "";
       let startAveshi = "";
@@ -357,34 +394,32 @@ function extractRowsFromHtmlTables(html) {
 
       if (col.aveshi >= 0 && cells[col.aveshi]) {
         rowLabel = normalizeRowLabel(cells[col.aveshi]);
-        startAveshi = extractNumberBeforeUnit(cells[col.aveshi], "(?:あべし)?");
+        startAveshi = extractNumberOnly(cells[col.aveshi]);
       } else {
-        const firstAveshiCell = cells.find((c) => looksLikeAveshiLabel(String(c).replace(/\s+/g, "")));
+        const firstAveshiCell = cells.find((c) => looksLikeAveshiLabel(c));
         if (firstAveshiCell) {
           rowLabel = normalizeRowLabel(firstAveshiCell);
-          startAveshi = extractNumberBeforeUnit(firstAveshiCell, "(?:あべし)?");
+          startAveshi = extractNumberOnly(firstAveshiCell);
         }
       }
 
       if (col.expectedValue >= 0 && cells[col.expectedValue]) {
-        expectedValueYen = cells[col.expectedValue].replace(/\s+/g, "");
+        expectedValueYen = normalizeCompact(cells[col.expectedValue]);
       } else {
-        const yenCell = cells.find((c) => /円/.test(c));
-        if (yenCell) expectedValueYen = yenCell.replace(/\s+/g, "");
+        const yenCells = compactCells.filter((c) => /円/.test(c));
+        if (yenCells.length > 0) {
+          expectedValueYen = yenCells[0];
+        }
       }
 
       if (col.payoutRate >= 0 && cells[col.payoutRate]) {
-        payoutRate = cells[col.payoutRate].replace(/\s+/g, "");
+        payoutRate = normalizeCompact(cells[col.payoutRate]);
       } else {
-        const rateCell = cells.find((c) => /%/.test(c));
-        if (rateCell) payoutRate = rateCell.replace(/\s+/g, "");
+        const rateCell = compactCells.find((c) => /%/.test(c));
+        if (rateCell) payoutRate = rateCell;
       }
 
-      if (col.notes >= 0 && cells[col.notes]) {
-        notes = cells[col.notes];
-      } else {
-        notes = joined;
-      }
+      notes = normalizeWhitespace(cells.join(" / "));
 
       if (!rowLabel && !expectedValueYen && !payoutRate) continue;
 
@@ -401,6 +436,8 @@ function extractRowsFromHtmlTables(html) {
       tables.push({
         table_title: heading || "HTML表",
         condition_group: conditionGroup,
+        context_text: contextText,
+        table_quality_score: tableQualityScore,
         rows: parsedRows,
       });
     }
@@ -565,6 +602,7 @@ function rowMatchesQuestion(row, table, conditions) {
   const conditionGroup = normalizeConditionGroup(table.condition_group);
   const title = normalizeConditionGroup(table.table_title);
   const notes = normalizeNotes(row.notes);
+  const context = normalizeConditionGroup(table.context_text || "");
 
   if (conditions.startAveshi !== null) {
     const target = String(conditions.startAveshi);
@@ -585,6 +623,9 @@ function rowMatchesQuestion(row, table, conditions) {
       title.includes("設定変更後") ||
       title.includes("設定変更") ||
       title.includes("リセット後") ||
+      context.includes("設定変更後") ||
+      context.includes("設定変更") ||
+      context.includes("リセット後") ||
       notes.includes("設定変更後") ||
       notes.includes("設定変更") ||
       notes.includes("リセット後");
@@ -598,6 +639,8 @@ function rowMatchesQuestion(row, table, conditions) {
       conditionGroup.includes("at終了後") ||
       title.includes("at後") ||
       title.includes("at終了後") ||
+      context.includes("at後") ||
+      context.includes("at終了後") ||
       notes.includes("at後") ||
       notes.includes("at終了後");
 
@@ -608,6 +651,7 @@ function rowMatchesQuestion(row, table, conditions) {
     const ok =
       conditionGroup.includes("シャッター狙い") ||
       title.includes("シャッター狙い") ||
+      context.includes("シャッター狙い") ||
       notes.includes("シャッター狙い");
 
     if (!ok) return false;
@@ -617,6 +661,7 @@ function rowMatchesQuestion(row, table, conditions) {
     const ok =
       conditionGroup.includes("シャッター有り") ||
       title.includes("シャッター有り") ||
+      context.includes("シャッター有り") ||
       notes.includes("シャッター有り") ||
       notes.includes("シャッターあり") ||
       notes.includes("有り確定") ||
@@ -629,6 +674,7 @@ function rowMatchesQuestion(row, table, conditions) {
     const ok =
       conditionGroup.includes("シャッター無し") ||
       title.includes("シャッター無し") ||
+      context.includes("シャッター無し") ||
       notes.includes("シャッター無し") ||
       notes.includes("シャッターなし");
 
@@ -651,6 +697,8 @@ function findBestMatches(extractedTables, conditions) {
       const candidate = {
         table_title: table.table_title || "",
         condition_group: table.condition_group || "",
+        context_text: table.context_text || "",
+        table_quality_score: Number(table.table_quality_score || 0),
         row_label: row.row_label || "",
         start_aveshi: row.start_aveshi || "",
         expected_value_yen: cleanYenText(row.expected_value_yen || ""),
@@ -676,20 +724,28 @@ function pickBestExactMatch(matches, conditions) {
     let score = 0;
 
     if (conditions.startAveshi !== null) {
-      if (String(m.start_aveshi) === String(conditions.startAveshi)) score += 10;
-      if (String(m.row_label) === `${conditions.startAveshi}-`) score += 10;
+      if (String(m.start_aveshi) === String(conditions.startAveshi)) score += 20;
+      if (String(m.row_label) === `${conditions.startAveshi}-`) score += 20;
     }
 
     const group = String(m.condition_group || "");
     const notes = String(m.notes || "");
     const title = String(m.table_title || "");
+    const context = String(m.context_text || "");
+    const full = group + notes + title + context;
 
-    if (conditions.resetAfter && /設定変更後|設定変更|リセット後/.test(group + notes + title)) score += 8;
-    if (conditions.afterAT && /AT後|AT終了後/.test(group + notes + title)) score += 8;
-    if (conditions.shutterSnipe && /シャッター狙い/.test(group + notes + title)) score += 8;
-    if (conditions.shutterAriExplicit && /シャッター有り|シャッターあり|有り確定|あり確定/.test(group + notes + title)) score += 6;
-    if (conditions.shutterNashiExplicit && /シャッター無し|シャッターなし/.test(group + notes + title)) score += 6;
-    if (m.expected_value_yen) score += 3;
+    if (conditions.resetAfter && /設定変更後|設定変更|リセット後/.test(full)) score += 12;
+    if (conditions.afterAT && /AT後|AT終了後/.test(full)) score += 12;
+    if (conditions.shutterSnipe && /シャッター狙い/.test(full)) score += 12;
+    if (conditions.shutterAriExplicit && /シャッター有り|シャッターあり|有り確定|あり確定/.test(full)) score += 6;
+    if (conditions.shutterNashiExplicit && /シャッター無し|シャッターなし/.test(full)) score += 6;
+
+    if (m.expected_value_yen && /円/.test(m.expected_value_yen)) score += 20;
+    if (m.payout_rate && /%/.test(m.payout_rate)) score += 5;
+
+    score += Number(m.table_quality_score || 0);
+
+    if (/ランキング|優先順位|105%以上/.test(full)) score -= 12;
 
     return { ...m, _score: score };
   });
