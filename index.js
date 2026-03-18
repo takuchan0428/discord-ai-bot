@@ -2,18 +2,15 @@ import { Client, GatewayIntentBits } from "discord.js";
 import OpenAI from "openai";
 import fs from "fs";
 import * as cheerio from "cheerio";
-import { parsePlist } from "@plist/plist";
+import plist from "@plist/plist";
+
+const { parsePlist } = plist;
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
-// GitHub に置いた .webarchive のファイル名
 const FILE_PATH = "./tensei.webarchive";
 
-// Discord の返答を長くしすぎないための上限
 const MAX_DISCORD_REPLY_LENGTH = 1800;
-
-// 質問ごとに GPT に渡す本文抜粋の最大長
 const MAX_CONTEXT_LENGTH = 12000;
 
 const client = new Client({
@@ -43,6 +40,11 @@ function normalizeWhitespace(text) {
 
 function extractMainHtmlFromWebarchive(filePath) {
   const raw = fs.readFileSync(filePath);
+
+  if (typeof parsePlist !== "function") {
+    throw new Error("parsePlist が利用できない");
+  }
+
   const parsed = parsePlist(bufferToArrayBuffer(raw));
 
   if (!parsed || typeof parsed !== "object") {
@@ -72,7 +74,6 @@ function extractMainHtmlFromWebarchive(filePath) {
     throw new Error("WebResourceData の形式が想定外");
   }
 
-  // 多くは text/html
   if (mime && !String(mime).includes("html")) {
     console.warn(`Main resource MIME type: ${mime}`);
   }
@@ -123,6 +124,7 @@ function extractRelevantChunks(fullText, question) {
 
   for (const keyword of keywords) {
     let startIndex = 0;
+
     while (true) {
       const idx = text.toLowerCase().indexOf(keyword.toLowerCase(), startIndex);
       if (idx === -1) break;
@@ -160,8 +162,8 @@ function splitForDiscord(text) {
 
   while (rest.length > 0) {
     let cut = rest.slice(0, MAX_DISCORD_REPLY_LENGTH);
-
     const lastNewline = cut.lastIndexOf("\n");
+
     if (lastNewline > 400) {
       cut = cut.slice(0, lastNewline);
     }
@@ -185,7 +187,7 @@ async function answerWithArchive(question) {
       {
         role: "system",
         content:
-          "あなたはスマスロ・パチスロの情報整理が得意なアシスタントです。回答は、必ず与えられた資料の内容を優先して、日本語で分かりやすく答えてください。資料に根拠が薄い場合は、断定しすぎず『資料上では』『この資料の範囲では』と前置きしてください。質問者は実戦向けの判断材料を求めています。",
+          "あなたはスマスロ・パチスロの情報整理が得意なアシスタントです。回答は必ず与えられた資料の内容を優先して、日本語で分かりやすく答えてください。資料に根拠が薄い場合は断定しすぎず、『資料上では』『この資料の範囲では』と前置きしてください。",
       },
       {
         role: "user",
@@ -211,14 +213,13 @@ client.once("ready", () => {
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
-
-  // メンションされた時だけ反応
   if (!message.mentions.has(client.user)) return;
 
   try {
     await message.channel.sendTyping();
 
     const question = message.content.replace(/<@!?\d+>/g, "").trim();
+
     if (!question) {
       await message.reply("質問文を入れてください");
       return;
@@ -232,9 +233,7 @@ client.on("messageCreate", async (message) => {
     }
   } catch (error) {
     console.error(error);
-    await message.reply(
-      "webarchiveの読み込みか回答生成でエラーが発生した"
-    );
+    await message.reply("webarchiveの読み込みか回答生成でエラーが発生した");
   }
 });
 
