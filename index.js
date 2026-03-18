@@ -9,8 +9,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FILE_PATH = "./tensei.webarchive";
 
 const MAX_DISCORD_REPLY_LENGTH = 1800;
-const MAX_CONTEXT_LENGTH = 14000;
-const MAX_IMAGES_TO_SEND = 8;
+const MAX_CONTEXT_LENGTH = 16000;
+const MAX_IMAGES_TO_SEND = 6;
 const MIN_IMAGE_BYTES = 8 * 1024;
 
 const client = new Client({
@@ -30,24 +30,12 @@ function bufferToArrayBuffer(buf) {
 }
 
 function normalizeWhitespace(text) {
-  return text
+  return String(text || "")
     .replace(/\r/g, "\n")
     .replace(/\t/g, " ")
     .replace(/[ \u3000]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-function describeValue(value) {
-  if (value === null) return "null";
-  if (value === undefined) return "undefined";
-  if (Buffer.isBuffer(value)) return "Buffer";
-  if (value instanceof Uint8Array) return "Uint8Array";
-  if (value instanceof ArrayBuffer) return "ArrayBuffer";
-  if (Array.isArray(value)) return "Array";
-  return typeof value === "object"
-    ? `object keys: ${Object.keys(value).join(", ")}`
-    : typeof value;
 }
 
 function decodeWebResourceData(data) {
@@ -58,7 +46,6 @@ function decodeWebResourceData(data) {
 
   if (typeof data === "string") {
     const trimmed = data.trim();
-
     if (/^[A-Za-z0-9+/=\s]+$/.test(trimmed) && trimmed.length > 0) {
       try {
         const base64Buf = Buffer.from(trimmed.replace(/\s+/g, ""), "base64");
@@ -67,16 +54,13 @@ function decodeWebResourceData(data) {
         // fallthrough
       }
     }
-
     return Buffer.from(trimmed, "utf-8");
   }
 
   if (data && typeof data === "object") {
     if (Buffer.isBuffer(data.data)) return data.data;
     if (data.data instanceof Uint8Array) return Buffer.from(data.data);
-    if (data.data instanceof ArrayBuffer) {
-      return Buffer.from(new Uint8Array(data.data));
-    }
+    if (data.data instanceof ArrayBuffer) return Buffer.from(new Uint8Array(data.data));
     if (Array.isArray(data.data)) return Buffer.from(data.data);
 
     if (typeof data.data === "string") {
@@ -106,16 +90,11 @@ function decodeWebResourceData(data) {
     }
   }
 
-  throw new Error(`WebResourceData の形式が想定外: ${describeValue(data)}`);
+  throw new Error("WebResourceData の形式が想定外");
 }
 
 function parseWebarchive(filePath) {
   const raw = fs.readFileSync(filePath);
-
-  if (typeof parse !== "function") {
-    throw new Error("plist の parse が利用できない");
-  }
-
   const parsed = parse(bufferToArrayBuffer(raw));
 
   if (!parsed || typeof parsed !== "object") {
@@ -133,17 +112,12 @@ function extractMainHtmlFromParsedArchive(parsed) {
   }
 
   const data = main.WebResourceData;
-  const mime = main.WebResourceMIMEType || "";
   const encoding =
     typeof main.WebResourceTextEncodingName === "string"
       ? main.WebResourceTextEncodingName.toLowerCase()
       : "utf-8";
 
   const htmlBuffer = decodeWebResourceData(data);
-
-  if (mime && !String(mime).includes("html")) {
-    console.warn(`Main resource MIME type: ${mime}`);
-  }
 
   try {
     return htmlBuffer.toString(encoding || "utf-8");
@@ -154,7 +128,6 @@ function extractMainHtmlFromParsedArchive(parsed) {
 
 function htmlToCleanText(html) {
   const $ = cheerio.load(html);
-
   $("script, style, noscript, svg").remove();
 
   const title = $("title").first().text().trim();
@@ -163,8 +136,50 @@ function htmlToCleanText(html) {
   return normalizeWhitespace([title, bodyText].filter(Boolean).join("\n\n"));
 }
 
+function splitForDiscord(text) {
+  if (text.length <= MAX_DISCORD_REPLY_LENGTH) return [text];
+
+  const parts = [];
+  let rest = text;
+
+  while (rest.length > 0) {
+    let cut = rest.slice(0, MAX_DISCORD_REPLY_LENGTH);
+    const lastNewline = cut.lastIndexOf("\n");
+
+    if (lastNewline > 400) {
+      cut = cut.slice(0, lastNewline);
+    }
+
+    parts.push(cut);
+    rest = rest.slice(cut.length).trimStart();
+  }
+
+  return parts;
+}
+
+function extractQuestionConditions(question) {
+  const q = String(question || "");
+
+  const startAveshi =
+    q.match(/(\d+)\s*あべし/)?.[1] ||
+    q.match(/(\d+)\s*abeshi/i)?.[1] ||
+    null;
+
+  return {
+    raw: q,
+    asksExpectedValue: /期待値|何円|円で|いくら|出玉率|機械割/.test(q),
+    asksSummary: /要約|まとめ|内容/.test(q),
+    resetAfter: /リセット後|設定変更後|設定変更/.test(q),
+    afterAT: /AT後|ＡＴ後|AT終了後/.test(q),
+    shutterSnipe: /シャッター狙い/.test(q),
+    shutterAriExplicit: /シャッター有り|シャッターあり|有り確定|あり確定/.test(q),
+    shutterNashiExplicit: /シャッター無し|シャッターなし/.test(q),
+    startAveshi,
+  };
+}
+
 function buildKeywordList(question) {
-  const cleaned = question
+  const cleaned = String(question || "")
     .replace(/<@!?\d+>/g, " ")
     .replace(/[^\p{L}\p{N}一-龠ぁ-んァ-ヶー]+/gu, " ")
     .trim();
@@ -177,63 +192,11 @@ function buildKeywordList(question) {
   return [...new Set(words)].slice(0, 20);
 }
 
-function extractQuestionConditions(question) {
-  const q = question.toLowerCase();
-
-  const startAveshi =
-    question.match(/(\d+)\s*あべし/)?.[1] ||
-    question.match(/(\d+)\s*abeshi/i)?.[1] ||
-    null;
-
-  return {
-    raw: question,
-    asksExpectedValue:
-      /期待値|何円|円で|いくら|出玉率|機械割/.test(question),
-    resetAfter:
-      /リセット後|設定変更後|設定変更/.test(question),
-    afterAT:
-      /at後|at終了後/.test(q) || /ＡＴ後|AT後|AT終了後/.test(question),
-    shutterSnipe:
-      /シャッター狙い/.test(question),
-    shutterAriExplicit:
-      /シャッター有り|シャッターあり|有り確定|あり確定/.test(question),
-    shutterNashiExplicit:
-      /シャッター無し|シャッターなし/.test(question),
-    startAveshi,
-  };
-}
-
-function buildConditionGuidance(question) {
-  const c = extractQuestionConditions(question);
-  const lines = [];
-
-  lines.push("【質問条件】");
-  if (c.resetAfter) lines.push("- リセット後 / 設定変更後");
-  if (c.afterAT) lines.push("- AT後");
-  if (c.shutterSnipe) lines.push("- シャッター狙い");
-  if (c.shutterAriExplicit) lines.push("- シャッター有り明示");
-  if (c.shutterNashiExplicit) lines.push("- シャッター無し明示");
-  if (c.startAveshi !== null) lines.push(`- 開始あべし: ${c.startAveshi}`);
-
-  lines.push("");
-  lines.push("【厳守】");
-  lines.push("- 表を行単位で読む");
-  lines.push("- 32あべしなら 32- 行を探す");
-  lines.push("- 0あべしなら 0- 行を探す");
-  lines.push("- リセット後 と AT後 は別条件");
-  lines.push("- シャッター狙い と シャッター有り確定 は別条件");
-  lines.push("- 条件が近くても一致しない行は exact=false 扱い");
-  lines.push("- 画像内の表の数字を優先的に読む");
-
-  return lines.join("\n");
-}
-
 function extractRelevantChunks(fullText, question) {
   const keywords = buildKeywordList(question);
   const conditions = extractQuestionConditions(question);
 
   const manualKeywords = [];
-
   if (conditions.resetAfter) manualKeywords.push("設定変更", "設定変更後", "リセット");
   if (conditions.afterAT) manualKeywords.push("AT後", "AT終了後");
   if (conditions.shutterSnipe) manualKeywords.push("シャッター狙い");
@@ -278,14 +241,178 @@ function extractRelevantChunks(fullText, question) {
   return chunks.join("\n\n---\n\n").slice(0, MAX_CONTEXT_LENGTH);
 }
 
+function findNearestHeadingText($, tableEl) {
+  let node = tableEl.prev();
+  let steps = 0;
+
+  while (node.length && steps < 12) {
+    const tag = (node[0]?.tagName || "").toLowerCase();
+    const text = normalizeWhitespace(node.text());
+
+    if (text) {
+      if (["h1", "h2", "h3", "h4", "h5", "h6"].includes(tag)) return text;
+      if (text.length <= 80) return text;
+    }
+
+    node = node.prev();
+    steps += 1;
+  }
+
+  return "";
+}
+
+function classifyConditionGroup(text) {
+  const t = String(text || "");
+
+  if (/設定変更後|リセット後|設定変更/.test(t)) return "設定変更後";
+  if (/AT後|AT終了後/.test(t)) return "AT後";
+  if (/シャッター有り|シャッターあり|有り確定|あり確定/.test(t)) return "シャッター有り";
+  if (/シャッター無し|シャッターなし/.test(t)) return "シャッター無し";
+  if (/シャッター狙い/.test(t)) return "シャッター狙い";
+
+  return "不明";
+}
+
+function looksLikeAveshiLabel(value) {
+  return /^\d+\s*-$/.test(value) || /^\d+$/.test(value);
+}
+
+function normalizeRowLabel(value) {
+  const s = String(value || "").replace(/\s+/g, "").trim();
+  if (/^\d+$/.test(s)) return `${s}-`;
+  if (/^\d+-$/.test(s)) return s;
+  return s;
+}
+
+function extractNumberBeforeUnit(value, unitRegex) {
+  const s = String(value || "").replace(/\s+/g, "");
+  const m = s.match(new RegExp(`(\\d+)${unitRegex}`));
+  return m ? m[1] : "";
+}
+
+function detectColumnIndexes(headers) {
+  const normalized = headers.map((h) => String(h || "").replace(/\s+/g, ""));
+
+  const indexOfAny = (patterns) =>
+    normalized.findIndex((h) => patterns.some((p) => h.includes(p)));
+
+  return {
+    aveshi: indexOfAny(["あべし", "開始", "ゲーム数", "g数"]),
+    expectedValue: indexOfAny(["期待値"]),
+    payoutRate: indexOfAny(["出玉率", "機械割"]),
+    notes: indexOfAny(["備考", "条件", "補足"]),
+  };
+}
+
+function extractRowsFromHtmlTables(html) {
+  const $ = cheerio.load(html);
+  const tables = [];
+
+  $("table").each((_, tableEl) => {
+    const heading = findNearestHeadingText($, $(tableEl));
+    const surroundingText = normalizeWhitespace(
+      [heading, $(tableEl).parent().text().slice(0, 300)].join(" ")
+    );
+    const conditionGroup = classifyConditionGroup(surroundingText);
+
+    const rows = [];
+    const headerCells = [];
+
+    $(tableEl)
+      .find("tr")
+      .each((trIndex, tr) => {
+        const ths = $(tr).find("th");
+        const tds = $(tr).find("td");
+        const cells = [];
+
+        if (ths.length > 0 && trIndex === 0) {
+          ths.each((_, th) => {
+            cells.push(normalizeWhitespace($(th).text()));
+          });
+          headerCells.push(...cells);
+          return;
+        }
+
+        if (tds.length === 0) return;
+
+        tds.each((_, td) => {
+          cells.push(normalizeWhitespace($(td).text()));
+        });
+
+        rows.push(cells);
+      });
+
+    const col = detectColumnIndexes(headerCells);
+
+    const parsedRows = [];
+
+    for (const cells of rows) {
+      const joined = cells.join(" ").replace(/\s+/g, " ").trim();
+
+      let rowLabel = "";
+      let startAveshi = "";
+      let expectedValueYen = "";
+      let payoutRate = "";
+      let notes = "";
+
+      if (col.aveshi >= 0 && cells[col.aveshi]) {
+        rowLabel = normalizeRowLabel(cells[col.aveshi]);
+        startAveshi = extractNumberBeforeUnit(cells[col.aveshi], "(?:あべし)?");
+      } else {
+        const firstAveshiCell = cells.find((c) => looksLikeAveshiLabel(String(c).replace(/\s+/g, "")));
+        if (firstAveshiCell) {
+          rowLabel = normalizeRowLabel(firstAveshiCell);
+          startAveshi = extractNumberBeforeUnit(firstAveshiCell, "(?:あべし)?");
+        }
+      }
+
+      if (col.expectedValue >= 0 && cells[col.expectedValue]) {
+        expectedValueYen = cells[col.expectedValue].replace(/\s+/g, "");
+      } else {
+        const yenCell = cells.find((c) => /円/.test(c));
+        if (yenCell) expectedValueYen = yenCell.replace(/\s+/g, "");
+      }
+
+      if (col.payoutRate >= 0 && cells[col.payoutRate]) {
+        payoutRate = cells[col.payoutRate].replace(/\s+/g, "");
+      } else {
+        const rateCell = cells.find((c) => /%/.test(c));
+        if (rateCell) payoutRate = rateCell.replace(/\s+/g, "");
+      }
+
+      if (col.notes >= 0 && cells[col.notes]) {
+        notes = cells[col.notes];
+      } else {
+        notes = joined;
+      }
+
+      if (!rowLabel && !expectedValueYen && !payoutRate) continue;
+
+      parsedRows.push({
+        row_label: rowLabel,
+        start_aveshi: startAveshi,
+        expected_value_yen: expectedValueYen,
+        payout_rate: payoutRate,
+        notes,
+      });
+    }
+
+    if (parsedRows.length > 0) {
+      tables.push({
+        table_title: heading || "HTML表",
+        condition_group: conditionGroup,
+        rows: parsedRows,
+      });
+    }
+  });
+
+  return { tables };
+}
+
 function isSupportedImageMime(mime) {
-  return [
-    "image/png",
-    "image/jpeg",
-    "image/jpg",
-    "image/webp",
-    "image/gif",
-  ].includes(String(mime).toLowerCase());
+  return ["image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"].includes(
+    String(mime).toLowerCase()
+  );
 }
 
 function scoreImageResource(resource) {
@@ -298,28 +425,19 @@ function scoreImageResource(resource) {
     score += 5000;
   }
 
-  if (data && data.length < 20 * 1024) {
-    score -= 8000;
-  }
-
-  if (mime === "image/gif") {
-    score -= 3000;
-  }
+  if (data && data.length < 20 * 1024) score -= 8000;
+  if (mime === "image/gif") score -= 3000;
 
   return score;
 }
 
 function extractImageInputsFromParsedArchive(parsed) {
-  const subresources = Array.isArray(parsed.WebSubresources)
-    ? parsed.WebSubresources
-    : [];
-
+  const subresources = Array.isArray(parsed.WebSubresources) ? parsed.WebSubresources : [];
   const candidates = [];
 
   for (const resource of subresources) {
     try {
       const mime = String(resource.WebResourceMIMEType || "").toLowerCase();
-
       if (!isSupportedImageMime(mime)) continue;
       if (!resource.WebResourceData) continue;
 
@@ -358,96 +476,94 @@ function safeJsonParse(text) {
     return JSON.parse(text);
   } catch {
     const match = text.match(/\{[\s\S]*\}/);
-    if (match) {
-      return JSON.parse(match[0]);
-    }
+    if (match) return JSON.parse(match[0]);
     throw new Error("JSON parse に失敗した");
   }
 }
 
 async function extractTableRowsFromImages(question, relevantText, imageInputs) {
-  const prompt = `あなたは画像内の表をそのまま読んで行データを抽出する役目です。
-自由要約は禁止です。見える表の各行をそのまま抜いてください。
+  if (!imageInputs || imageInputs.length === 0) {
+    return { tables: [] };
+  }
 
-${buildConditionGuidance(question)}
+  const prompt = `画像内の表をそのまま読んで行データを抽出してください。
+自由要約は禁止です。JSONのみ返してください。
+
+【質問】
+${question}
 
 【本文参考】
 ${relevantText}
 
 【出力形式】
-JSONのみを返してください。
 {
   "tables": [
     {
       "table_title": "表タイトル",
-      "condition_group": "設定変更後 / AT後 / 不明 など",
+      "condition_group": "設定変更後 / AT後 / シャッター狙い / 不明",
       "rows": [
         {
-          "row_label": "0-",
-          "start_aveshi": "0",
-          "expected_value_yen": "1486円",
-          "payout_rate": "108.1%",
-          "notes": "表から読める条件"
+          "row_label": "32-",
+          "start_aveshi": "32",
+          "expected_value_yen": "2203円",
+          "payout_rate": "113.6%",
+          "notes": "画像表から読める条件"
         }
       ]
     }
   ]
-}
-
-【重要】
-- 32あべしなら row_label は 32- と読む
-- 読めないセルは空文字でよい
-- 画像に複数表があるなら全部出す
-- JSON以外の文章は書かない`;
+}`;
 
   const completion = await openai.chat.completions.create({
     model: "gpt-4.1",
     temperature: 0,
-    max_tokens: 1800,
+    max_tokens: 1600,
     messages: [
       {
         role: "system",
         content:
-          "あなたは画像OCRと表抽出に特化したアシスタントです。表を行単位で正確に抜いてJSONで返してください。",
+          "あなたは画像表の行抽出専用アシスタントです。JSON以外を返さず、見えた数字だけをそのまま返してください。",
       },
       {
         role: "user",
         content: [
-          {
-            type: "text",
-            text: prompt,
-          },
+          { type: "text", text: prompt },
           ...imageInputs,
         ],
       },
     ],
   });
 
-  const content = completion.choices[0]?.message?.content || "{}";
+  const content = completion.choices[0]?.message?.content || '{"tables":[]}';
   return safeJsonParse(content);
 }
 
+function mergeTables(primary, fallback) {
+  return {
+    tables: [
+      ...(Array.isArray(primary?.tables) ? primary.tables : []),
+      ...(Array.isArray(fallback?.tables) ? fallback.tables : []),
+    ],
+  };
+}
+
 function cleanYenText(value) {
-  if (!value) return "";
-  return String(value).replace(/\s+/g, "").trim();
+  return String(value || "").replace(/\s+/g, "").trim();
 }
 
 function normalizeConditionGroup(value) {
-  return String(value || "")
-    .replace(/\s+/g, "")
-    .toLowerCase();
+  return String(value || "").replace(/\s+/g, "").toLowerCase();
 }
 
 function normalizeNotes(value) {
-  return String(value || "")
-    .replace(/\s+/g, "")
-    .toLowerCase();
+  return String(value || "").replace(/\s+/g, "").toLowerCase();
 }
 
 function rowMatchesQuestion(row, table, conditions) {
   const rowLabel = String(row.row_label || "").trim();
   const rowAveshi = String(row.start_aveshi || "").trim();
   const conditionGroup = normalizeConditionGroup(table.condition_group);
+  const title = normalizeConditionGroup(table.table_title);
   const notes = normalizeNotes(row.notes);
 
   if (conditions.startAveshi !== null) {
@@ -458,19 +574,20 @@ function rowMatchesQuestion(row, table, conditions) {
       rowLabel === target ||
       rowAveshi === target;
 
-    if (!labelOk) {
-      return false;
-    }
+    if (!labelOk) return false;
   }
 
   if (conditions.resetAfter) {
     const ok =
-      conditionGroup.includes("設定変更後".toLowerCase()) ||
-      conditionGroup.includes("リセット後".toLowerCase()) ||
-      conditionGroup.includes("設定変更".toLowerCase()) ||
+      conditionGroup.includes("設定変更後") ||
+      conditionGroup.includes("設定変更") ||
+      conditionGroup.includes("リセット後") ||
+      title.includes("設定変更後") ||
+      title.includes("設定変更") ||
+      title.includes("リセット後") ||
       notes.includes("設定変更後") ||
-      notes.includes("リセット後") ||
-      notes.includes("設定変更");
+      notes.includes("設定変更") ||
+      notes.includes("リセット後");
 
     if (!ok) return false;
   }
@@ -479,6 +596,8 @@ function rowMatchesQuestion(row, table, conditions) {
     const ok =
       conditionGroup.includes("at後") ||
       conditionGroup.includes("at終了後") ||
+      title.includes("at後") ||
+      title.includes("at終了後") ||
       notes.includes("at後") ||
       notes.includes("at終了後");
 
@@ -486,34 +605,32 @@ function rowMatchesQuestion(row, table, conditions) {
   }
 
   if (conditions.shutterSnipe) {
-    const rejectAriOnly =
-      !conditions.shutterAriExplicit &&
-      (notes.includes("シャッター有り") ||
-        notes.includes("シャッターあり") ||
-        notes.includes("有り確定") ||
-        notes.includes("あり確定"));
+    const ok =
+      conditionGroup.includes("シャッター狙い") ||
+      title.includes("シャッター狙い") ||
+      notes.includes("シャッター狙い");
 
-    if (rejectAriOnly) return false;
+    if (!ok) return false;
   }
 
   if (conditions.shutterAriExplicit) {
     const ok =
+      conditionGroup.includes("シャッター有り") ||
+      title.includes("シャッター有り") ||
       notes.includes("シャッター有り") ||
       notes.includes("シャッターあり") ||
       notes.includes("有り確定") ||
-      notes.includes("あり確定") ||
-      conditionGroup.includes("シャッター有り") ||
-      conditionGroup.includes("シャッターあり");
+      notes.includes("あり確定");
 
     if (!ok) return false;
   }
 
   if (conditions.shutterNashiExplicit) {
     const ok =
-      notes.includes("シャッター無し") ||
-      notes.includes("シャッターなし") ||
       conditionGroup.includes("シャッター無し") ||
-      conditionGroup.includes("シャッターなし");
+      title.includes("シャッター無し") ||
+      notes.includes("シャッター無し") ||
+      notes.includes("シャッターなし");
 
     if (!ok) return false;
   }
@@ -565,14 +682,13 @@ function pickBestExactMatch(matches, conditions) {
 
     const group = String(m.condition_group || "");
     const notes = String(m.notes || "");
+    const title = String(m.table_title || "");
 
-    if (conditions.resetAfter && /設定変更後|設定変更|リセット後/.test(group + notes)) score += 8;
-    if (conditions.afterAT && /AT後|AT終了後/.test(group + notes)) score += 8;
-
-    if (conditions.shutterSnipe && /シャッター狙い/.test(group + notes + m.table_title)) score += 6;
-    if (conditions.shutterAriExplicit && /シャッター有り|シャッターあり|有り確定|あり確定/.test(group + notes)) score += 6;
-    if (conditions.shutterNashiExplicit && /シャッター無し|シャッターなし/.test(group + notes)) score += 6;
-
+    if (conditions.resetAfter && /設定変更後|設定変更|リセット後/.test(group + notes + title)) score += 8;
+    if (conditions.afterAT && /AT後|AT終了後/.test(group + notes + title)) score += 8;
+    if (conditions.shutterSnipe && /シャッター狙い/.test(group + notes + title)) score += 8;
+    if (conditions.shutterAriExplicit && /シャッター有り|シャッターあり|有り確定|あり確定/.test(group + notes + title)) score += 6;
+    if (conditions.shutterNashiExplicit && /シャッター無し|シャッターなし/.test(group + notes + title)) score += 6;
     if (m.expected_value_yen) score += 3;
 
     return { ...m, _score: score };
@@ -582,7 +698,7 @@ function pickBestExactMatch(matches, conditions) {
   return scored[0];
 }
 
-function formatAnswer(question, conditions, bestMatch, nearbyCandidates) {
+function formatAnswer(question, bestMatch, nearbyCandidates) {
   if (bestMatch) {
     const lines = [];
     lines.push(`結論: ${question} の期待値は ${bestMatch.expected_value_yen}`);
@@ -592,12 +708,8 @@ function formatAnswer(question, conditions, bestMatch, nearbyCandidates) {
     lines.push(`- 条件群: ${bestMatch.condition_group || "不明"}`);
     lines.push(`- 表タイトル: ${bestMatch.table_title || "不明"}`);
     lines.push(`- 期待値: ${bestMatch.expected_value_yen || "不明"}`);
-    if (bestMatch.payout_rate) {
-      lines.push(`- 出玉率: ${bestMatch.payout_rate}`);
-    }
-    if (bestMatch.notes) {
-      lines.push(`- 補足: ${bestMatch.notes}`);
-    }
+    if (bestMatch.payout_rate) lines.push(`- 出玉率: ${bestMatch.payout_rate}`);
+    if (bestMatch.notes) lines.push(`- 補足: ${bestMatch.notes}`);
     return lines.join("\n");
   }
 
@@ -607,33 +719,13 @@ function formatAnswer(question, conditions, bestMatch, nearbyCandidates) {
   lines.push("近い候補:");
   for (const c of nearbyCandidates.slice(0, 8)) {
     lines.push(
-      `- 行:${c.row_label} / 条件:${c.condition_group || "不明"} / 期待値:${c.expected_value_yen || "不明"} / 表:${c.table_title || "不明"}`
+      `- 行:${c.row_label || "不明"} / 条件:${c.condition_group || "不明"} / 期待値:${c.expected_value_yen || "不明"} / 表:${c.table_title || "不明"}`
     );
   }
   lines.push("");
   lines.push(`質問: ${question}`);
+
   return lines.join("\n");
-}
-
-function splitForDiscord(text) {
-  if (text.length <= MAX_DISCORD_REPLY_LENGTH) return [text];
-
-  const parts = [];
-  let rest = text;
-
-  while (rest.length > 0) {
-    let cut = rest.slice(0, MAX_DISCORD_REPLY_LENGTH);
-    const lastNewline = cut.lastIndexOf("\n");
-
-    if (lastNewline > 400) {
-      cut = cut.slice(0, lastNewline);
-    }
-
-    parts.push(cut);
-    rest = rest.slice(cut.length).trimStart();
-  }
-
-  return parts;
 }
 
 async function answerWithArchive(question) {
@@ -641,23 +733,17 @@ async function answerWithArchive(question) {
   const html = extractMainHtmlFromParsedArchive(parsed);
   const fullText = htmlToCleanText(html);
   const relevantText = extractRelevantChunks(fullText, question);
-  const imageInputs = extractImageInputsFromParsedArchive(parsed);
-
   const conditions = extractQuestionConditions(question);
-  const extractedTables = await extractTableRowsFromImages(
-    question,
-    relevantText,
-    imageInputs
-  );
 
-  const { exactMatches, nearbyCandidates } = findBestMatches(
-    extractedTables,
-    conditions
-  );
+  const htmlTables = extractRowsFromHtmlTables(html);
+  const imageInputs = extractImageInputsFromParsedArchive(parsed);
+  const imageTables = await extractTableRowsFromImages(question, relevantText, imageInputs);
 
+  const merged = mergeTables(htmlTables, imageTables);
+  const { exactMatches, nearbyCandidates } = findBestMatches(merged, conditions);
   const bestMatch = pickBestExactMatch(exactMatches, conditions);
 
-  return formatAnswer(question, conditions, bestMatch, nearbyCandidates);
+  return formatAnswer(question, bestMatch, nearbyCandidates);
 }
 
 client.once("ready", () => {
@@ -686,8 +772,7 @@ client.on("messageCreate", async (message) => {
     }
   } catch (error) {
     console.error(error);
-    const errorMessage =
-      error && error.message ? error.message : String(error);
+    const errorMessage = error?.message || String(error);
     await message.reply(`エラー: ${errorMessage}`);
   }
 });
