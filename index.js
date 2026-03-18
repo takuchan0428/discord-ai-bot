@@ -233,7 +233,11 @@ client.on("messageCreate", async (message) => {
     }
   } catch (error) {
     console.error(error);
-    await message.reply("webarchiveの読み込みか回答生成でエラーが発生した");
+
+    const errorMessage =
+      error && error.message ? error.message : String(error);
+
+    await message.reply(`エラー: ${errorMessage}`);
   }
 });
 
