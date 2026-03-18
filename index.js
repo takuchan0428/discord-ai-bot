@@ -10,7 +10,7 @@ const FILE_PATH = "./tensei.webarchive";
 
 const MAX_DISCORD_REPLY_LENGTH = 1800;
 const MAX_CONTEXT_LENGTH = 16000;
-const MAX_IMAGES_TO_SEND = 6;
+const MAX_IMAGES_TO_SEND = 4;
 const MIN_IMAGE_BYTES = 8 * 1024;
 
 const client = new Client({
@@ -40,6 +40,23 @@ function normalizeWhitespace(text) {
 
 function normalizeCompact(text) {
   return String(text || "").replace(/\s+/g, "").trim();
+}
+
+function splitForDiscord(text) {
+  if (text.length <= MAX_DISCORD_REPLY_LENGTH) return [text];
+
+  const parts = [];
+  let rest = text;
+
+  while (rest.length > 0) {
+    let cut = rest.slice(0, MAX_DISCORD_REPLY_LENGTH);
+    const lastNewline = cut.lastIndexOf("\n");
+    if (lastNewline > 400) cut = cut.slice(0, lastNewline);
+    parts.push(cut);
+    rest = rest.slice(cut.length).trimStart();
+  }
+
+  return parts;
 }
 
 function decodeWebResourceData(data) {
@@ -140,27 +157,6 @@ function htmlToCleanText(html) {
   return normalizeWhitespace([title, bodyText].filter(Boolean).join("\n\n"));
 }
 
-function splitForDiscord(text) {
-  if (text.length <= MAX_DISCORD_REPLY_LENGTH) return [text];
-
-  const parts = [];
-  let rest = text;
-
-  while (rest.length > 0) {
-    let cut = rest.slice(0, MAX_DISCORD_REPLY_LENGTH);
-    const lastNewline = cut.lastIndexOf("\n");
-
-    if (lastNewline > 400) {
-      cut = cut.slice(0, lastNewline);
-    }
-
-    parts.push(cut);
-    rest = rest.slice(cut.length).trimStart();
-  }
-
-  return parts;
-}
-
 function extractQuestionConditions(question) {
   const q = String(question || "");
 
@@ -173,7 +169,7 @@ function extractQuestionConditions(question) {
     raw: q,
     asksExpectedValue: /期待値|何円|円で|いくら|出玉率|機械割/.test(q),
     asksSummary: /要約|まとめ|内容/.test(q),
-    resetAfter: /リセット後|設定変更後|設定変更/.test(q),
+    resetAfter: /リセット後|設定変更後|設定変更|リセ後/.test(q),
     afterAT: /AT後|ＡＴ後|AT終了後/.test(q),
     shutterSnipe: /シャッター狙い/.test(q),
     shutterAriExplicit: /シャッター有り|シャッターあり|有り確定|あり確定/.test(q),
@@ -201,7 +197,7 @@ function extractRelevantChunks(fullText, question) {
   const conditions = extractQuestionConditions(question);
 
   const manualKeywords = [];
-  if (conditions.resetAfter) manualKeywords.push("設定変更", "設定変更後", "リセット");
+  if (conditions.resetAfter) manualKeywords.push("設定変更", "設定変更後", "リセット", "リセ後");
   if (conditions.afterAT) manualKeywords.push("AT後", "AT終了後");
   if (conditions.shutterSnipe) manualKeywords.push("シャッター狙い");
   if (conditions.shutterAriExplicit) manualKeywords.push("シャッター有り", "シャッターあり");
@@ -251,7 +247,7 @@ function findNearestHeadingText($, tableEl) {
   let node = tableEl.prev();
   let steps = 0;
 
-  while (node.length && steps < 18) {
+  while (node.length && steps < 20) {
     const tag = (node[0]?.tagName || "").toLowerCase();
     const text = normalizeWhitespace(node.text());
 
@@ -260,8 +256,7 @@ function findNearestHeadingText($, tableEl) {
         results.push(text);
         break;
       }
-
-      if (text.length <= 120) {
+      if (text.length <= 140) {
         results.push(text);
       }
     }
@@ -276,7 +271,7 @@ function findNearestHeadingText($, tableEl) {
 function classifyConditionGroup(text) {
   const t = String(text || "");
 
-  if (/設定変更後|リセット後|設定変更/.test(t)) return "設定変更後";
+  if (/設定変更後|リセット後|設定変更|リセ後/.test(t)) return "設定変更後";
   if (/AT後|AT終了後/.test(t)) return "AT後";
   if (/シャッター有り|シャッターあり|有り確定|あり確定/.test(t)) return "シャッター有り";
   if (/シャッター無し|シャッターなし/.test(t)) return "シャッター無し";
@@ -313,10 +308,10 @@ function detectColumnIndexes(headers) {
     aveshi: indexOfAny(["あべし", "開始", "ゲーム数", "g数"]),
     expectedValue: indexOfAny(["期待値"]),
     payoutRate: indexOfAny(["出玉率", "機械割"]),
-    notes: indexOfAny(["備考", "条件", "補足"]),
+    hitRate: indexOfAny(["初当り", "初当たり"]),
     time: indexOfAny(["消化時間"]),
     wage: indexOfAny(["時給"]),
-    hitRate: indexOfAny(["初当り", "初当たり"]),
+    sim: indexOfAny(["シミュ回数"]),
   };
 }
 
@@ -324,17 +319,18 @@ function scoreTableMeta(title, headerCells, contextText) {
   let score = 0;
   const full = normalizeCompact([title, ...headerCells, contextText].join(" "));
 
-  if (full.includes("シャッター狙い")) score += 12;
-  if (full.includes("設定変更後") || full.includes("リセット後") || full.includes("設定変更")) score += 12;
-  if (full.includes("あべし")) score += 10;
-  if (full.includes("期待値")) score += 10;
+  if (full.includes("シャッター狙い")) score += 15;
+  if (full.includes("設定変更後") || full.includes("リセット後") || full.includes("設定変更") || full.includes("リセ後")) score += 15;
+  if (full.includes("at後") || full.includes("AT後")) score += 12;
+  if (full.includes("あべし")) score += 12;
+  if (full.includes("期待値")) score += 12;
   if (full.includes("出玉率")) score += 8;
-  if (full.includes("消化時間")) score += 4;
-  if (full.includes("時給")) score += 4;
+  if (full.includes("時給")) score += 3;
+  if (full.includes("消化時間")) score += 3;
 
-  if (full.includes("ランキング")) score -= 15;
-  if (full.includes("優先順位")) score -= 15;
-  if (full.includes("105%以上")) score -= 8;
+  if (full.includes("ランキング")) score -= 20;
+  if (full.includes("優先順位")) score -= 20;
+  if (full.includes("105%以上")) score -= 10;
 
   return score;
 }
@@ -346,14 +342,13 @@ function extractRowsFromHtmlTables(html) {
   $("table").each((_, tableEl) => {
     const table = $(tableEl);
     const heading = findNearestHeadingText($, table);
-    const parentText = normalizeWhitespace(table.parent().text()).slice(0, 600);
-    const tableText = normalizeWhitespace(table.text()).slice(0, 600);
+    const parentText = normalizeWhitespace(table.parent().text()).slice(0, 700);
+    const tableText = normalizeWhitespace(table.text()).slice(0, 700);
     const contextText = normalizeWhitespace([heading, parentText, tableText].join(" / "));
     const conditionGroup = classifyConditionGroup(contextText);
 
-    const trs = table.find("tr");
     const rowsRaw = [];
-    trs.each((__, tr) => {
+    table.find("tr").each((__, tr) => {
       const row = [];
       $(tr)
         .find("th, td")
@@ -392,7 +387,6 @@ function extractRowsFromHtmlTables(html) {
       let startAveshi = "";
       let expectedValueYen = "";
       let payoutRate = "";
-      let notes = "";
 
       if (col.aveshi >= 0 && cells[col.aveshi]) {
         rowLabel = normalizeRowLabel(cells[col.aveshi]);
@@ -409,9 +403,7 @@ function extractRowsFromHtmlTables(html) {
         expectedValueYen = normalizeCompact(cells[col.expectedValue]);
       } else {
         const yenCells = compactCells.filter((c) => /円/.test(c));
-        if (yenCells.length > 0) {
-          expectedValueYen = yenCells[0];
-        }
+        if (yenCells.length > 0) expectedValueYen = yenCells[0];
       }
 
       if (col.payoutRate >= 0 && cells[col.payoutRate]) {
@@ -421,7 +413,7 @@ function extractRowsFromHtmlTables(html) {
         if (rateCell) payoutRate = rateCell;
       }
 
-      notes = normalizeWhitespace(cells.join(" / "));
+      const notes = normalizeWhitespace(cells.join(" / "));
 
       if (!rowLabel && !expectedValueYen && !payoutRate) continue;
 
@@ -463,7 +455,6 @@ function scoreImageResource(resource) {
   if (/chart|graph|table|img|figure|image|capture|screen|jpg|jpeg|png|webp/i.test(url)) {
     score += 5000;
   }
-
   if (data && data.length < 20 * 1024) score -= 8000;
   if (mime === "image/gif") score -= 3000;
 
@@ -590,65 +581,6 @@ function cleanYenText(value) {
   return String(value || "").replace(/\s+/g, "").trim();
 }
 
-function normalizeConditionGroup(value) {
-  return String(value || "").replace(/\s+/g, "").toLowerCase();
-}
-
-function normalizeNotes(value) {
-  return String(value || "").replace(/\s+/g, "").toLowerCase();
-}
-
-function rowMatchesQuestion(row, table, conditions) {
-  const rowLabel = String(row.row_label || "").trim();
-  const rowAveshi = String(row.start_aveshi || "").trim();
-  const conditionGroup = normalizeConditionGroup(table.condition_group);
-  const title = normalizeConditionGroup(table.table_title);
-  const notes = normalizeNotes(row.notes);
-  const context = normalizeConditionGroup(table.context_text || "");
-  const full = `${conditionGroup} ${title} ${notes} ${context}`;
-
-  if (conditions.startAveshi !== null) {
-    const target = String(conditions.startAveshi);
-    const labelOk =
-      rowLabel === `${target}-` ||
-      rowLabel === `${target} -` ||
-      rowLabel === target ||
-      rowAveshi === target;
-
-    if (!labelOk) return false;
-  }
-
-  if (conditions.resetAfter) {
-    const ok = /設定変更後|設定変更|リセット後/.test(full);
-    if (!ok) return false;
-    if (/at後|at終了後/.test(full) && !/設定変更後|設定変更|リセット後/.test(full)) {
-      return false;
-    }
-  }
-
-  if (conditions.afterAT) {
-    const ok = /at後|at終了後/.test(full);
-    if (!ok) return false;
-  }
-
-  if (conditions.shutterSnipe) {
-    const ok = /シャッター狙い/.test(full);
-    if (!ok) return false;
-  }
-
-  if (conditions.shutterAriExplicit) {
-    const ok = /シャッター有り|シャッターあり|有り確定|あり確定/.test(full);
-    if (!ok) return false;
-  }
-
-  if (conditions.shutterNashiExplicit) {
-    const ok = /シャッター無し|シャッターなし/.test(full);
-    if (!ok) return false;
-  }
-
-  return true;
-}
-
 function buildCandidate(table, row) {
   return {
     table_title: table.table_title || "",
@@ -663,6 +595,60 @@ function buildCandidate(table, row) {
   };
 }
 
+function buildCandidateFullText(candidate) {
+  return normalizeCompact(
+    [
+      candidate.condition_group,
+      candidate.table_title,
+      candidate.context_text,
+      candidate.notes,
+    ].join(" ")
+  );
+}
+
+function rowMatchesBasicAveshi(row, conditions) {
+  if (conditions.startAveshi === null) return true;
+
+  const target = String(conditions.startAveshi);
+  const rowLabel = String(row.row_label || "").trim();
+  const rowAveshi = String(row.start_aveshi || "").trim();
+
+  return (
+    rowLabel === `${target}-` ||
+    rowLabel === `${target} -` ||
+    rowLabel === target ||
+    rowAveshi === target
+  );
+}
+
+function tableMatchesRequestedMode(candidate, conditions) {
+  const full = buildCandidateFullText(candidate);
+
+  if (conditions.resetAfter) {
+    const hasReset = /設定変更後|設定変更|リセット後|リセ後/.test(full);
+    const hasATOnly = /AT後|AT終了後/.test(full) && !hasReset;
+    if (!hasReset || hasATOnly) return false;
+  }
+
+  if (conditions.afterAT) {
+    if (!/AT後|AT終了後/.test(full)) return false;
+  }
+
+  if (conditions.shutterSnipe) {
+    if (!/シャッター狙い/.test(full)) return false;
+  }
+
+  if (conditions.shutterAriExplicit) {
+    if (!/シャッター有り|シャッターあり|有り確定|あり確定/.test(full)) return false;
+  }
+
+  if (conditions.shutterNashiExplicit) {
+    if (!/シャッター無し|シャッターなし/.test(full)) return false;
+  }
+
+  return true;
+}
+
 function findBestMatches(extractedTables, conditions) {
   const exactMatches = [];
   const nearbyCandidates = [];
@@ -675,7 +661,7 @@ function findBestMatches(extractedTables, conditions) {
     for (const row of rows) {
       const candidate = buildCandidate(table, row);
 
-      if (rowMatchesQuestion(row, table, conditions)) {
+      if (rowMatchesBasicAveshi(row, conditions) && tableMatchesRequestedMode(candidate, conditions)) {
         exactMatches.push(candidate);
       } else {
         nearbyCandidates.push(candidate);
@@ -689,33 +675,33 @@ function findBestMatches(extractedTables, conditions) {
 function applyStrictPreference(matches, conditions) {
   let filtered = [...matches];
 
+  if (conditions.asksExpectedValue) {
+    const withExpected = filtered.filter((m) => /円/.test(m.expected_value_yen));
+    if (withExpected.length > 0) filtered = withExpected;
+  }
+
   if (conditions.resetAfter) {
-    const resetPreferred = filtered.filter((m) => {
-      const full = `${m.condition_group} ${m.table_title} ${m.notes} ${m.context_text}`;
-      return /設定変更後|設定変更|リセット後/.test(full) && !/AT後|AT終了後/.test(full);
+    const pureReset = filtered.filter((m) => {
+      const full = buildCandidateFullText(m);
+      return /設定変更後|設定変更|リセット後|リセ後/.test(full) && !/AT後|AT終了後/.test(full);
     });
-    if (resetPreferred.length > 0) filtered = resetPreferred;
+    if (pureReset.length > 0) filtered = pureReset;
   }
 
   if (conditions.afterAT) {
-    const atPreferred = filtered.filter((m) => {
-      const full = `${m.condition_group} ${m.table_title} ${m.notes} ${m.context_text}`;
+    const atOnly = filtered.filter((m) => {
+      const full = buildCandidateFullText(m);
       return /AT後|AT終了後/.test(full);
     });
-    if (atPreferred.length > 0) filtered = atPreferred;
+    if (atOnly.length > 0) filtered = atOnly;
   }
 
   if (conditions.shutterSnipe) {
-    const shutterPreferred = filtered.filter((m) => {
-      const full = `${m.condition_group} ${m.table_title} ${m.notes} ${m.context_text}`;
+    const shutterOnly = filtered.filter((m) => {
+      const full = buildCandidateFullText(m);
       return /シャッター狙い/.test(full);
     });
-    if (shutterPreferred.length > 0) filtered = shutterPreferred;
-  }
-
-  if (conditions.asksExpectedValue) {
-    const withExpectedValue = filtered.filter((m) => /円/.test(m.expected_value_yen));
-    if (withExpectedValue.length > 0) filtered = withExpectedValue;
+    if (shutterOnly.length > 0) filtered = shutterOnly;
   }
 
   return filtered;
@@ -724,32 +710,31 @@ function applyStrictPreference(matches, conditions) {
 function pickBestExactMatch(matches, conditions) {
   if (matches.length === 0) return null;
 
-  const strictlyFiltered = applyStrictPreference(matches, conditions);
+  const filtered = applyStrictPreference(matches, conditions);
 
-  const scored = strictlyFiltered.map((m) => {
+  const scored = filtered.map((m) => {
     let score = 0;
+    const full = buildCandidateFullText(m);
 
     if (conditions.startAveshi !== null) {
-      if (String(m.start_aveshi) === String(conditions.startAveshi)) score += 30;
-      if (String(m.row_label) === `${conditions.startAveshi}-`) score += 30;
+      if (String(m.start_aveshi) === String(conditions.startAveshi)) score += 40;
+      if (String(m.row_label) === `${conditions.startAveshi}-`) score += 40;
     }
 
-    const full = `${m.condition_group} ${m.notes} ${m.table_title} ${m.context_text}`;
+    if (conditions.resetAfter && /設定変更後|設定変更|リセット後|リセ後/.test(full)) score += 30;
+    if (conditions.afterAT && /AT後|AT終了後/.test(full)) score += 30;
+    if (conditions.shutterSnipe && /シャッター狙い/.test(full)) score += 30;
+    if (conditions.shutterAriExplicit && /シャッター有り|シャッターあり|有り確定|あり確定/.test(full)) score += 10;
+    if (conditions.shutterNashiExplicit && /シャッター無し|シャッターなし/.test(full)) score += 10;
 
-    if (conditions.resetAfter && /設定変更後|設定変更|リセット後/.test(full)) score += 20;
-    if (conditions.afterAT && /AT後|AT終了後/.test(full)) score += 20;
-    if (conditions.shutterSnipe && /シャッター狙い/.test(full)) score += 20;
-    if (conditions.shutterAriExplicit && /シャッター有り|シャッターあり|有り確定|あり確定/.test(full)) score += 8;
-    if (conditions.shutterNashiExplicit && /シャッター無し|シャッターなし/.test(full)) score += 8;
-
-    if (m.expected_value_yen && /円/.test(m.expected_value_yen)) score += 25;
-    if (m.payout_rate && /%/.test(m.payout_rate)) score += 8;
+    if (m.expected_value_yen && /円/.test(m.expected_value_yen)) score += 35;
+    if (m.payout_rate && /%/.test(m.payout_rate)) score += 10;
 
     score += Number(m.table_quality_score || 0);
 
-    if (/ランキング|優先順位|105%以上/.test(full)) score -= 20;
-    if (/AT後|AT終了後/.test(full) && conditions.resetAfter) score -= 50;
-    if (/設定変更後|設定変更|リセット後/.test(full) && conditions.afterAT) score -= 50;
+    if (/ランキング|優先順位|105%以上/.test(full)) score -= 30;
+    if (/AT後|AT終了後/.test(full) && conditions.resetAfter) score -= 100;
+    if (/設定変更後|設定変更|リセット後|リセ後/.test(full) && conditions.afterAT) score -= 100;
 
     return { ...m, _score: score };
   });
@@ -796,6 +781,14 @@ async function answerWithArchive(question) {
   const conditions = extractQuestionConditions(question);
 
   const htmlTables = extractRowsFromHtmlTables(html);
+
+  const { exactMatches: htmlExactMatches } = findBestMatches(htmlTables, conditions);
+  const htmlBest = pickBestExactMatch(htmlExactMatches, conditions);
+
+  if (htmlBest && /円/.test(htmlBest.expected_value_yen)) {
+    return formatAnswer(question, htmlBest, []);
+  }
+
   const imageInputs = extractImageInputsFromParsedArchive(parsed);
   const imageTables = await extractTableRowsFromImages(question, relevantText, imageInputs);
 
