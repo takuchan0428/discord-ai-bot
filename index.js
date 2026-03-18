@@ -10,7 +10,7 @@ const FILE_PATH = "./tensei.webarchive";
 
 const MAX_DISCORD_REPLY_LENGTH = 1800;
 const MAX_CONTEXT_LENGTH = 14000;
-const MAX_IMAGES_TO_SEND = 6;
+const MAX_IMAGES_TO_SEND = 8;
 const MIN_IMAGE_BYTES = 8 * 1024;
 
 const client = new Client({
@@ -189,6 +189,32 @@ function extractQuestionConditions(question) {
       /at後|at終了後/.test(q) || /ＡＴ後|AT後|AT終了後/.test(question),
     fromZero:
       /0あべし|０あべし/.test(question),
+    from16:
+      /16あべし/.test(question),
+    from32:
+      /32あべし/.test(question),
+    from48:
+      /48あべし/.test(question),
+    from64:
+      /64あべし/.test(question),
+    from80:
+      /80あべし/.test(question),
+    from96:
+      /96あべし/.test(question),
+    from128:
+      /128あべし/.test(question),
+    from144:
+      /144あべし/.test(question),
+    from160:
+      /160あべし/.test(question),
+    from176:
+      /176あべし/.test(question),
+    from192:
+      /192あべし/.test(question),
+    from208:
+      /208あべし/.test(question),
+    from224:
+      /224あべし/.test(question),
     from256:
       /256あべし/.test(question),
     shutterSnipe:
@@ -209,6 +235,19 @@ function buildConditionGuidance(question) {
   if (c.resetAfter) lines.push("- 『リセット後 / 設定変更後』が指定されている");
   if (c.afterAT) lines.push("- 『AT後』が指定されている");
   if (c.fromZero) lines.push("- 『0あべし開始』が指定されている");
+  if (c.from16) lines.push("- 『16あべし開始』が指定されている");
+  if (c.from32) lines.push("- 『32あべし開始』が指定されている");
+  if (c.from48) lines.push("- 『48あべし開始』が指定されている");
+  if (c.from64) lines.push("- 『64あべし開始』が指定されている");
+  if (c.from80) lines.push("- 『80あべし開始』が指定されている");
+  if (c.from96) lines.push("- 『96あべし開始』が指定されている");
+  if (c.from128) lines.push("- 『128あべし開始』が指定されている");
+  if (c.from144) lines.push("- 『144あべし開始』が指定されている");
+  if (c.from160) lines.push("- 『160あべし開始』が指定されている");
+  if (c.from176) lines.push("- 『176あべし開始』が指定されている");
+  if (c.from192) lines.push("- 『192あべし開始』が指定されている");
+  if (c.from208) lines.push("- 『208あべし開始』が指定されている");
+  if (c.from224) lines.push("- 『224あべし開始』が指定されている");
   if (c.from256) lines.push("- 『256あべし開始』が指定されている");
   if (c.shutterSnipe) lines.push("- 『シャッター狙い』がテーマ");
   if (c.shutterAriExplicit) lines.push("- 『シャッター有り』が明示指定されている");
@@ -216,12 +255,12 @@ function buildConditionGuidance(question) {
 
   lines.push("");
   lines.push("【厳守ルール】");
-  lines.push("- 質問条件と一致しない表や数値は答えに使わない");
-  lines.push("- 特に『リセット後』と『AT後』は別物として扱う");
-  lines.push("- 特に『シャッター狙い』と『シャッター有り確定時』は別物として扱う");
-  lines.push("- ユーザーが明示していない限り、『シャッター有り』の数値を『シャッター狙い』の数値として流用しない");
-  lines.push("- 条件が一致する数値を見つけられない場合、勝手に近い表を採用せず『資料上で完全一致の数値は確認できない』と答える");
-  lines.push("- 数値を答える時は、『どの条件の数値か』を必ず1行目に明記する");
+  lines.push("- 表の行を実際に読んで、行単位で答える");
+  lines.push("- 『リセット後』と『AT後』は別物");
+  lines.push("- 『シャッター狙い』と『シャッター有り確定』は別物");
+  lines.push("- 近い条件の行を流用しない");
+  lines.push("- 条件一致しない場合は『完全一致の行なし』と返す");
+  lines.push("- 数値を出す場合は必ず行ラベルも出す");
 
   return lines.join("\n");
 }
@@ -238,6 +277,19 @@ function extractRelevantChunks(fullText, question) {
   if (conditions.resetAfter) manualKeywords.push("設定変更", "設定変更後", "リセット");
   if (conditions.afterAT) manualKeywords.push("AT後", "AT終了後");
   if (conditions.fromZero) manualKeywords.push("0あべし");
+  if (conditions.from16) manualKeywords.push("16あべし");
+  if (conditions.from32) manualKeywords.push("32あべし");
+  if (conditions.from48) manualKeywords.push("48あべし");
+  if (conditions.from64) manualKeywords.push("64あべし");
+  if (conditions.from80) manualKeywords.push("80あべし");
+  if (conditions.from96) manualKeywords.push("96あべし");
+  if (conditions.from128) manualKeywords.push("128あべし");
+  if (conditions.from144) manualKeywords.push("144あべし");
+  if (conditions.from160) manualKeywords.push("160あべし");
+  if (conditions.from176) manualKeywords.push("176あべし");
+  if (conditions.from192) manualKeywords.push("192あべし");
+  if (conditions.from208) manualKeywords.push("208あべし");
+  if (conditions.from224) manualKeywords.push("224あべし");
   if (conditions.from256) manualKeywords.push("256あべし");
   if (conditions.shutterSnipe) manualKeywords.push("シャッター狙い");
   if (conditions.shutterAriExplicit) manualKeywords.push("シャッター有り", "シャッターあり");
@@ -353,6 +405,112 @@ function extractImageInputsFromParsedArchive(parsed) {
   });
 }
 
+async function extractStructuredAnswer(question, relevantText, imageInputs) {
+  const conditionGuidance = buildConditionGuidance(question);
+
+  const userContent = [
+    {
+      type: "text",
+      text: `あなたの仕事は「資料から条件完全一致の行だけを抜き出すこと」です。
+自由要約ではなく、表の行抽出を最優先してください。
+
+【資料抜粋】
+${relevantText}
+
+【補足】
+添付画像にも表があります。画像の表は必ず行単位で確認してください。
+
+${conditionGuidance}
+
+【質問】
+${question}
+
+【重要】
+- 画像の表にある行ラベル（例: 0-, 16-, 32-, 256-）を直接読む
+- 「32あべし」を聞かれたら「32-」行を探す
+- 「0あべし」を聞かれたら「0-」行を探す
+- 「リセット後 / 設定変更後」と「AT後」は分ける
+- 「シャッター狙い」と「シャッター有り確定」は分ける
+- 候補が複数あるなら全候補を出す
+- 見つからない時だけ not_found にする`,
+    },
+    ...imageInputs,
+  ];
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1",
+    temperature: 0.0,
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "slot_table_match",
+        strict: true,
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            exact_match_found: {
+              type: "boolean",
+            },
+            matched_condition: {
+              type: "string",
+            },
+            answer_yen: {
+              type: "string",
+            },
+            reason: {
+              type: "string",
+            },
+            evidence_rows: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  row_label: { type: "string" },
+                  condition_label: { type: "string" },
+                  expected_value_yen: { type: "string" },
+                  payout_rate: { type: "string" },
+                  source_type: { type: "string" },
+                },
+                required: [
+                  "row_label",
+                  "condition_label",
+                  "expected_value_yen",
+                  "payout_rate",
+                  "source_type",
+                ],
+              },
+            },
+          },
+          required: [
+            "exact_match_found",
+            "matched_condition",
+            "answer_yen",
+            "reason",
+            "evidence_rows",
+          ],
+        },
+      },
+    },
+    messages: [
+      {
+        role: "system",
+        content:
+          "あなたはパチスロ期待値資料の表抽出専用アシスタントです。推測禁止。条件完全一致の行だけを返してください。",
+      },
+      {
+        role: "user",
+        content: userContent,
+      },
+    ],
+    max_tokens: 1200,
+  });
+
+  const content = completion.choices[0]?.message?.content || "{}";
+  return JSON.parse(content);
+}
+
 function splitForDiscord(text) {
   if (text.length <= MAX_DISCORD_REPLY_LENGTH) return [text];
 
@@ -374,58 +532,63 @@ function splitForDiscord(text) {
   return parts;
 }
 
+function formatStructuredAnswer(question, result) {
+  const rows = Array.isArray(result.evidence_rows) ? result.evidence_rows : [];
+
+  if (result.exact_match_found) {
+    const lines = [];
+    lines.push(`結論: ${result.matched_condition} の期待値は ${result.answer_yen}`);
+    if (result.reason) {
+      lines.push("");
+      lines.push(`根拠: ${result.reason}`);
+    }
+    if (rows.length > 0) {
+      lines.push("");
+      lines.push("候補として読めた行:");
+      for (const row of rows.slice(0, 5)) {
+        lines.push(
+          `- 行:${row.row_label} / 条件:${row.condition_label} / 期待値:${row.expected_value_yen} / 出玉率:${row.payout_rate}`
+        );
+      }
+    }
+    return lines.join("\n");
+  }
+
+  const lines = [];
+  lines.push("結論: 資料上で質問条件に完全一致する数値を断定できなかった");
+  if (result.reason) {
+    lines.push("");
+    lines.push(`理由: ${result.reason}`);
+  }
+  if (rows.length > 0) {
+    lines.push("");
+    lines.push("読み取れた近い候補:");
+    for (const row of rows.slice(0, 8)) {
+      lines.push(
+        `- 行:${row.row_label} / 条件:${row.condition_label} / 期待値:${row.expected_value_yen} / 出玉率:${row.payout_rate}`
+      );
+    }
+  }
+  lines.push("");
+  lines.push(`質問: ${question}`);
+
+  return lines.join("\n");
+}
+
 async function answerWithArchive(question) {
   const parsed = parseWebarchive(FILE_PATH);
   const html = extractMainHtmlFromParsedArchive(parsed);
   const fullText = htmlToCleanText(html);
   const relevantText = extractRelevantChunks(fullText, question);
   const imageInputs = extractImageInputsFromParsedArchive(parsed);
-  const conditionGuidance = buildConditionGuidance(question);
 
-  const userContent = [
-    {
-      type: "text",
-      text: `以下はSafariの.webarchiveから抽出した本文です。
+  const structured = await extractStructuredAnswer(
+    question,
+    relevantText,
+    imageInputs
+  );
 
-【資料抜粋】
-${relevantText}
-
-【補足】
-このwebarchive内に含まれる画像も添付しています。画像内の表・数値・注釈・見出しも確認してください。
-
-${conditionGuidance}
-
-【質問】
-${question}
-
-【出力ルール】
-- 条件に完全一致する数値だけ答える
-- 一致しない近い条件の数値は使わない
-- 数値回答の1行目で、どの条件の数値か必ず明記する
-- 条件一致の数値が見つからない場合は、その旨を明記する
-- パチスロ期待値の質問では、結論→根拠→補足の順に短く答える`,
-    },
-    ...imageInputs,
-  ];
-
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4.1-mini",
-    temperature: 0.0,
-    messages: [
-      {
-        role: "system",
-        content:
-          "あなたはパチスロ期待値稼働のプロです。資料の条件差を厳密に見分けてください。『リセット後』『AT後』『シャッター狙い』『シャッター有り確定』『シャッター無し』は別条件です。似た数値を流用せず、条件一致を最優先してください。",
-      },
-      {
-        role: "user",
-        content: userContent,
-      },
-    ],
-    max_tokens: 1200,
-  });
-
-  return completion.choices[0]?.message?.content || "回答を生成できなかった";
+  return formatStructuredAnswer(question, structured);
 }
 
 client.once("ready", () => {
@@ -447,9 +610,9 @@ client.on("messageCreate", async (message) => {
     }
 
     const answer = await answerWithArchive(question);
-    const messages = splitForDiscord(answer);
+    const parts = splitForDiscord(answer);
 
-    for (const part of messages) {
+    for (const part of parts) {
       await message.reply(part);
     }
   } catch (error) {
